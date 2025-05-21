@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,11 +15,25 @@ export default function NewCoursePage() {
   const [difficulty, setDifficulty] = useState<CourseDifficulty>(CourseDifficulty.EASY); // Default difficulty
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [countdown, setCountdown] = useState<number | null>(null); // New state for countdown
 
-  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+  useEffect(() => {
+    let timer: NodeJS.Timeout;
+    if (countdown !== null && countdown > 0) {
+      timer = setInterval(() => {
+        setCountdown(prevCountdown => (prevCountdown ? prevCountdown - 1 : 0));
+      }, 1000);
+    } else if (countdown === 0) {
+      router.push('/dashboard');
+    }
+    return () => clearInterval(timer); // Cleanup interval
+  }, [countdown, router]);
+
+  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setIsLoading(true);
     setError(null);
+    setCountdown(null); // Reset countdown on new submission
 
     if (!title.trim() || !subject.trim()) {
       setError("Title and Subject are required.");
@@ -28,21 +42,8 @@ export default function NewCoursePage() {
     }
 
     const courseData: CourseCreateRequest = { title, subject, difficulty };
-
-    try {
-      const result = await createCourse(courseData);
-      if (result && result.id) {
-        // Optionally show a success message before redirecting
-        router.push('/dashboard');
-      } else {
-        setError(result?.message || 'Failed to create course. Please try again.');
-      }
-    } catch (err) {
-      setError('An unexpected error occurred. Please try again.');
-      console.error(err);
-    } finally {
-      setIsLoading(false);
-    }
+    setCountdown(5);
+    createCourse(courseData)
   };
 
   return (
@@ -59,7 +60,7 @@ export default function NewCoursePage() {
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder="e.g., Introduction to Web Development"
-            disabled={isLoading}
+            disabled={isLoading || countdown !== null}
             required
           />
         </div>
@@ -71,7 +72,7 @@ export default function NewCoursePage() {
             value={subject}
             onChange={(e) => setSubject(e.target.value)}
             placeholder="e.g., Programming"
-            disabled={isLoading}
+            disabled={isLoading || countdown !== null}
             required
           />
         </div>
@@ -81,7 +82,7 @@ export default function NewCoursePage() {
             id="difficulty" 
             value={difficulty} 
             onChange={(e) => setDifficulty(e.target.value as CourseDifficulty)}
-            disabled={isLoading}
+            disabled={isLoading || countdown !== null}
             required
             className="block w-full h-10 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
           >
@@ -95,12 +96,16 @@ export default function NewCoursePage() {
 
         {error && <p className="text-sm text-red-600">{error}</p>}
 
-        <Button type="submit" disabled={isLoading} className="w-full">
-          {isLoading ? 'Creating Course...' : 'Create Course'}
+        <Button type="submit" disabled={isLoading || countdown !== null} className="w-full">
+          {countdown !== null
+            ? `Redirecting in ${countdown}s...`
+            : isLoading
+            ? 'Initiating Creation...'
+            : 'Create Course'}
         </Button>
       </form>
        <div className="mt-8 text-center">
-        <Button variant="link" onClick={() => router.back()} disabled={isLoading}>
+        <Button variant="link" onClick={() => router.back()} disabled={isLoading || countdown !== null}>
           Cancel
         </Button>
       </div>

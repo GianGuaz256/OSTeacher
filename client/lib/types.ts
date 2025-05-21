@@ -7,10 +7,25 @@ export enum LessonStatus {
   PENDING = "pending", // Retained for now, consider phasing out if not used
 }
 
+export enum UserLessonStatus { // New Enum for user-facing lesson status
+  NOT_STARTED = "not_started",
+  IN_PROGRESS = "in_progress",
+  COMPLETED = "completed",
+}
+
 export enum CourseStatus {
   DRAFT = "draft",
   PUBLISHED = "published",
   ARCHIVED = "archived",
+  GENERATING = "generating", // Added for course generation status
+  COMPLETED = "completed", // Added for course completion status
+  GENERATION_FAILED = "generation_failed", // Added for course generation failure
+}
+
+export enum UserCourseStatus { // New Enum for user-facing course status
+  NOT_STARTED = "not_started",
+  IN_PROGRESS = "in_progress",
+  COMPLETED = "completed",
 }
 
 export enum CourseLevel {
@@ -39,7 +54,8 @@ export interface Lesson {
   planned_description?: string; // New field
   content_md: string | null; // Can be null
   external_links: string[];
-  status: LessonStatus;
+  generation_status: LessonStatus; // New field for generation process
+  status: UserLessonStatus; // User-facing status
   order_in_course?: number; // New field
 
   // Frontend specific: slug for URL, derived from title or index
@@ -58,7 +74,8 @@ export interface Course {
   difficulty?: CourseDifficulty;
   lesson_outline_plan?: LessonOutlineItem[]; // New field
   lessons: Lesson[];
-  status?: CourseStatus; // Added from CourseUpdate model possibility
+  generation_status?: CourseStatus; // New field for course generation status
+  status?: UserCourseStatus; // Added from CourseUpdate model possibility
   level?: CourseLevel;   // Added from CourseUpdate model possibility
   created_at?: string; // Added, consider if datetime parsing is needed client-side
   updated_at?: string; // Added
@@ -80,7 +97,7 @@ export interface CourseUpdate {
   title?: string;
   subject?: string;
   description?: string;
-  status?: CourseStatus;
+  status?: UserCourseStatus;
   level?: CourseLevel;
   icon?: string;
   lesson_outline_plan?: LessonOutlineItem[]; // Allow updating the plan

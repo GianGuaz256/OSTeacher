@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { getAllCourses } from '@/lib/api';
 import type { Course } from '@/lib/types';
+import { CourseStatus, UserCourseStatus } from '@/lib/types';
 import {
   Card,
   CardContent,
@@ -10,9 +11,25 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Plus } from 'lucide-react';
 
 export const dynamic = 'force-dynamic'; // Ensure fresh data on each request
+
+// Helper function to determine badge variant based on course status
+const getStatusBadgeVariant = (status: UserCourseStatus | string | undefined) => {
+  if (!status) return "secondary";
+  switch (status.toLowerCase()) {
+    case UserCourseStatus.COMPLETED.toLowerCase():
+      return "success";
+    case UserCourseStatus.IN_PROGRESS.toLowerCase():
+      return "warning";
+    case UserCourseStatus.NOT_STARTED.toLowerCase():
+      return "outline";
+    default:
+      return "secondary";
+  }
+};
 
 async function DashboardPage() {
   const courses = await getAllCourses();
@@ -38,7 +55,14 @@ async function DashboardPage() {
           {courses.map((course: Course) => (
             <Card key={course.id} className="flex flex-col">
               <CardHeader>
-                <CardTitle className="text-2xl">{course.title}</CardTitle>
+                <div className="flex justify-between items-start">
+                  <CardTitle className="text-2xl">{course.title}</CardTitle>
+                  {course.status && course.generation_status !== CourseStatus.DRAFT && (
+                    <Badge variant={getStatusBadgeVariant(course.status)} className="ml-2 whitespace-nowrap">
+                      {course.status.replace('_', ' ')}
+                    </Badge>
+                  )}
+                </div>
                 <CardDescription>{course.subject}</CardDescription>
               </CardHeader>
               <CardContent className="flex-grow">
@@ -51,11 +75,17 @@ async function DashboardPage() {
                  {course.icon && <p className="text-2xl mt-2">{course.icon}</p>}
               </CardContent>
               <CardFooter>
-                <Link href={`/courses/${course.id}`} className="w-full" passHref>
-                  <Button className="w-full">
-                    View Course
+                {course.generation_status === CourseStatus.DRAFT ? (
+                  <Button className="w-full" disabled>
+                    Generating...
                   </Button>
-                </Link>
+                ) : (
+                  <Link href={`/courses/${course.id}`} className="w-full" passHref>
+                    <Button className="w-full">
+                      View Course
+                    </Button>
+                  </Link>
+                )}
               </CardFooter>
             </Card>
           ))}

@@ -6,6 +6,7 @@ import rehypeHighlight from 'rehype-highlight';
 import 'highlight.js/styles/github-dark.css'; // Or your preferred highlight.js theme
 import { type Element } from 'hast';
 import type { ReactNode } from 'react'; // Import ReactNode
+import MermaidBlock from '@/components/custom/MermaidBlock'; // Import the new MermaidBlock component
 
 interface MarkdownRendererProps {
   markdown: string;
@@ -36,6 +37,15 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ markdown, className
     code: (props: CodeComponentProps) => {
       const { node, inline, className: propClassName, children, ...restProps } = props;
       if (!node) return null; // Guard against node being undefined
+
+      const match = /language-(\w+)/.exec(propClassName || '');
+      const lang = match && match[1];
+
+      if (lang === 'mermaid') {
+        const mermaidCode = typeof children === 'string' ? children.trim() : '';
+        // Use the MermaidBlock component for mermaid code blocks
+        return <MermaidBlock code={mermaidCode} />;
+      }
 
       if (inline) {
         return <code className={`px-1 py-0.5 bg-muted text-muted-foreground rounded-sm text-sm ${propClassName || ''}`} {...restProps}>{children}</code>;

@@ -11,11 +11,26 @@ class LessonStatus(str, Enum):
     GENERATION_FAILED = "generation_failed"
     NEEDS_REVIEW = "needs_review"
     PENDING = "pending" # Keep for backward compatibility if needed, or phase out
+    # Add any specific generation statuses if different from user-facing ones
+    # For now, we'll assume they can share the same enum, but this might change.
+
+class UserLessonStatus(str, Enum): # New Enum for user-facing lesson status
+    NOT_STARTED = "not_started"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
 
 class CourseStatus(str, Enum):
     DRAFT = "draft"
     PUBLISHED = "published"
     ARCHIVED = "archived"
+    GENERATING = "generating" # Added for course generation status
+    COMPLETED = "completed" # Added for course completion status
+    GENERATION_FAILED = "generation_failed" # Added for course generation failure
+
+class UserCourseStatus(str, Enum): # New Enum for user-facing course status
+    NOT_STARTED = "not_started"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
 
 class CourseLevel(str, Enum):
     BEGINNER = "beginner"
@@ -41,7 +56,8 @@ class Lesson(BaseModel):
     planned_description: Optional[str] = None # New field
     content_md: Optional[str] = None # Can be None while generating or if generation fails
     external_links: List[str] = Field(default_factory=list)
-    status: LessonStatus = LessonStatus.PLANNED
+    generation_status: LessonStatus = LessonStatus.PLANNED # New field for generation process
+    status: UserLessonStatus = UserLessonStatus.NOT_STARTED # User-facing status
     order_in_course: Optional[int] = None # Will be set
 
 class Course(BaseModel):
@@ -54,7 +70,8 @@ class Course(BaseModel):
     lesson_outline_plan: Optional[List[LessonOutlineItem]] = None # New field to store the plan
     lessons: List[Lesson] = Field(default_factory=list) # This will be populated from the separate 'lessons' table
     # The 'lessons' field above is for API response. It's not directly stored in 'courses' table as JSON blob anymore.
-    status: CourseStatus = CourseStatus.DRAFT # Default status if not provided
+    generation_status: CourseStatus = CourseStatus.DRAFT # New field for course generation status
+    status: UserCourseStatus = UserCourseStatus.NOT_STARTED # Default user-facing status if not provided
     level: Optional[CourseLevel] = None # Added from CourseUpdate
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
@@ -71,7 +88,7 @@ class CourseUpdateRequest(BaseModel): # Renamed from CourseUpdate for clarity
     title: Optional[str] = None
     subject: Optional[str] = None
     description: Optional[str] = None
-    status: Optional[CourseStatus] = None
+    status: Optional[UserCourseStatus] = None # Changed from CourseStatus to UserCourseStatus
     level: Optional[CourseLevel] = None
     icon: Optional[str] = None
     lesson_outline_plan: Optional[List[LessonOutlineItem]] = None # Allow updating the plan

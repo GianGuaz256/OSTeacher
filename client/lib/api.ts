@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Course, CourseCreationResponse, CourseCreateRequest, CourseUpdate, Lesson } from './types';
+import type { Course, CourseCreationResponse, CourseCreateRequest, CourseUpdate, Lesson, UserLessonStatus } from './types';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
 
@@ -95,6 +95,31 @@ export async function regenerateLesson(lessonId: string): Promise<Course | null>
   } catch (error) {
     console.error(`Failed to regenerate lesson ${lessonId}:`, error);
     // Consider throwing the error or returning a specific error object for better handling
+    return null;
+  }
+}
+
+export async function updateLessonUserStatus(lessonId: string, status: UserLessonStatus): Promise<Lesson | null> {
+  try {
+    const response = await apiClient.put<Lesson>(
+      `/lessons/${lessonId}/user-status`,
+      null, // Sending null as the body, as data is in query params
+      {
+        params: { status_update: status }, // Send status as a query parameter
+        headers: {
+          // 'Content-Type': 'application/json', // Content-Type might not be needed if there's no body
+        },
+      }
+    );
+    console.log(`[API Client] Received response for lesson ${lessonId} status update:`, response.data);
+    return response.data;
+  } catch (error: any) { // Added :any to error to access error.response
+    console.error(`[API Client] Failed to update user status for lesson ${lessonId} to ${status}. Error:`, error);
+    if (error.response) {
+      console.error(`[API Client] Error response data:`, error.response.data);
+      console.error(`[API Client] Error response status:`, error.response.status);
+      console.error(`[API Client] Error response headers:`, error.response.headers);
+    }
     return null;
   }
 } 

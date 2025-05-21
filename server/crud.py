@@ -7,6 +7,8 @@ from .models import (
     LessonStatus, 
     CourseDifficulty, 
     CourseStatus,
+    UserLessonStatus,
+    UserCourseStatus
 )
 from typing import List, Optional, Dict, Any # Added Any
 import uuid
@@ -142,7 +144,8 @@ def _parse_course_markdown(md_content: str, default_title: str, default_subject:
                     title=lesson_title, 
                     content_md=lesson_content_md,
                     external_links=extracted_links, # Add extracted links
-                    status="pending" # Default status, LessonStatus.PENDING.value could also be used
+                    generation_status=LessonStatus.COMPLETED, # Assuming content is present
+                    # status (user-facing) will default to UserLessonStatus.NOT_STARTED
                 )
             )
     except Exception as e:
@@ -163,8 +166,12 @@ def create_course(db: Client, title: str, subject: str, difficulty: str) -> Opti
     use_tools = not isinstance(selected_model, Ollama)
     print(f"Agent tools will be {'ENABLED' if use_tools else 'DISABLED'} for this run.")
 
-    planner_tools = [Crawl4aiTools(max_length=5), WikipediaTools()] if use_tools else []
-    lesson_tools = [YouTubeTools(), Crawl4aiTools(max_length=3), WikipediaTools()] if use_tools else []
+    # TODO: Deleted tools like Craw4AI as they make too many requests to the API
+    # planner_tools = [Crawl4aiTools(max_length=5), WikipediaTools()] if use_tools else []
+    # lesson_tools = [YouTubeTools(), Crawl4aiTools(max_length=3), WikipediaTools()] if use_tools else []
+
+    planner_tools = [WikipediaTools()] if use_tools else []
+    lesson_tools = [YouTubeTools(), WikipediaTools()] if use_tools else []
 
     # 1. CoursePlannerAgent Configuration
     planner_agent = Agent(
@@ -242,10 +249,11 @@ def create_course(db: Client, title: str, subject: str, difficulty: str) -> Opti
             except json.JSONDecodeError as e:
                 # Provide detailed error information including the problematic string segment
                 # e.doc is the input doc to json.loads, e.pos is the index of the error
+                problematic_doc = e.doc if hasattr(e, 'doc') else json_string_to_parse # Fallback if e.doc is not available
                 context_window = 30 # Show N chars before and after error position
                 start_index = max(0, e.pos - context_window)
-                end_index = min(len(e.doc), e.pos + context_window)
-                error_context = e.doc[start_index:end_index]
+                end_index = min(len(problematic_doc), e.pos + context_window)
+                error_context = problematic_doc[start_index:end_index]
                 # Escape newlines in context for cleaner log printing
                 error_context_escaped = error_context.replace('\n', '\\n').replace('\r', '\\r')
 
@@ -253,7 +261,10 @@ def create_course(db: Client, title: str, subject: str, difficulty: str) -> Opti
                 print(f"  Message: {e.msg}")
                 print(f"  At Line: {e.lineno}, Column: {e.colno} (Position: {e.pos})")
                 print(f"  Error context (around pos {e.pos}): '...{error_context_escaped}...'")
-                print(f"  String attempted for parsing (first 500 chars of sanitized version): ''{json_string_to_parse[:500]}...''")
+                # Show more of the string that was attempted, and its length
+                print(f"  String attempted for parsing (length {len(json_string_to_parse)}, first 1000 chars of sanitized version): ''{json_string_to_parse[:1000]}...''")
+                if len(json_string_to_parse) > 1000:
+                    print(f"  String attempted for parsing (last 200 chars of sanitized version): ''...{json_string_to_parse[-200:]}''")
                 print(f"  Original Planner Raw Output (first 500 chars): ''{getattr(planner_response_obj, 'content', '')[:500]}...''")
                 return None
         else:
@@ -362,7 +373,13 @@ def create_course(db: Client, title: str, subject: str, difficulty: str) -> Opti
                     'usage': None, 'content': str(lesson_response_obj)
                 })()
                 # session_to_log related lines removed
-                final_lessons_data.append(Lesson(title=lesson_title, content_md=error_content, external_links=[], status=LessonStatus.ERROR.value))
+                final_lessons_data.append(Lesson(
+                    title=lesson_title, 
+                    content_md=error_content, 
+                    external_links=[], 
+                    generation_status=LessonStatus.GENERATION_FAILED,
+                    # status (user-facing) will default to UserLessonStatus.NOT_STARTED
+                ))
                 continue # Move to next lesson
 
             # lesson_session_data related lines removed
@@ -375,13 +392,14 @@ def create_course(db: Client, title: str, subject: str, difficulty: str) -> Opti
 
             if lesson_content_md and isinstance(lesson_content_md, str) and len(lesson_content_md) > 50: # Basic check for non-empty, meaningful content
                 # Corrected regex for Markdown links: [text](url) - captures URL
-                extracted_links = re.findall(r'\[[^\]]*?\]\(([^)]+?)\)', lesson_content_md)
+                extracted_links = re.findall(r'\[[^\]]*?\]\\(([^)]+?)\\)', lesson_content_md)
                 
                 lesson_pydantic_obj = Lesson(
                     title=lesson_title, # Use title from plan, agent might refine it in content_md
                     content_md=lesson_content_md,
                     external_links=extracted_links, # Add extracted links
-                    status=LessonStatus.PENDING.value
+                    generation_status=LessonStatus.COMPLETED, # Content generated successfully
+                    # status (user-facing) will default to UserLessonStatus.NOT_STARTED
                 )
                 final_lessons_data.append(lesson_pydantic_obj)
                 print(f"Successfully generated content for Lesson {i+1}: '{lesson_title}'")
@@ -390,7 +408,13 @@ def create_course(db: Client, title: str, subject: str, difficulty: str) -> Opti
                 print(error_msg)
                 print(f"Raw content received (first 200 chars): {str(lesson_content_md)[:200]}...")
                 lesson_error_detail = getattr(lesson_response_obj, 'error', "No specific error in response, but content invalid.")
-                final_lessons_data.append(Lesson(title=lesson_title, content_md=f"{error_msg}\nAgent error detail: {lesson_error_detail}\nRaw output: {str(lesson_content_md)[:200]}...", external_links=[], status=LessonStatus.ERROR.value))
+                final_lessons_data.append(Lesson(
+                    title=lesson_title, 
+                    content_md=f"{error_msg}\\nAgent error detail: {lesson_error_detail}\\nRaw output: {str(lesson_content_md)[:200]}...", 
+                    external_links=[], 
+                    generation_status=LessonStatus.GENERATION_FAILED,
+                    # status (user-facing) will default to UserLessonStatus.NOT_STARTED
+                ))
         
         except Exception as e:
             print(f"An unexpected exception occurred during {agent_lesson_name} execution for lesson '{lesson_title}': {e}")
@@ -408,7 +432,13 @@ def create_course(db: Client, title: str, subject: str, difficulty: str) -> Opti
                     'usage': None, 'content': exc_traceback
                 })()
             # session_to_log related lines removed
-            final_lessons_data.append(Lesson(title=lesson_title, content_md=error_content_for_lesson, external_links=[], status=LessonStatus.ERROR.value))
+            final_lessons_data.append(Lesson(
+                title=lesson_title, 
+                content_md=error_content_for_lesson, 
+                external_links=[], 
+                generation_status=LessonStatus.GENERATION_FAILED,
+                # status (user-facing) will default to UserLessonStatus.NOT_STARTED
+            ))
             # Optionally, decide whether to continue or abort course generation if too many lessons fail
 
     # 4. Validate Generated Lessons
@@ -416,7 +446,7 @@ def create_course(db: Client, title: str, subject: str, difficulty: str) -> Opti
         print("Error: No lessons were processed or generated. Aborting course creation.")
         return None
 
-    successful_lessons_count = sum(1 for lesson in final_lessons_data if lesson.status == LessonStatus.PENDING.value and len(lesson.content_md) > 50)
+    successful_lessons_count = sum(1 for lesson in final_lessons_data if lesson.generation_status == LessonStatus.COMPLETED and lesson.content_md and len(lesson.content_md) > 50)
     min_successful_lessons = max(1, len(course_plan_data["lessons"]) * 0.7) # Ensure at least 1 or 70% successful lessons
 
     if successful_lessons_count < min_successful_lessons:
@@ -434,6 +464,8 @@ def create_course(db: Client, title: str, subject: str, difficulty: str) -> Opti
         icon=course_plan_data.get("courseIcon"),
         difficulty=difficulty,
         lessons=final_lessons_data, # List of Pydantic Lesson objects (includes successful and error ones)
+        # generation_status and status (user-facing) will use defaults from Pydantic Course model:
+        # generation_status=CourseStatus.DRAFT, status=UserCourseStatus.NOT_STARTED
     )
 
     course_data_to_save = new_course_pydantic.model_dump(exclude_none=True)
@@ -485,6 +517,10 @@ def get_course(db: Client, course_id: str) -> Optional[Dict[str, Any]]:
         processed_lessons = []
         if lessons_response.data:
             for lesson_dict in lessons_response.data:
+                # Map db 'user_facing_status' to pydantic 'status'
+                if 'user_facing_status' in lesson_dict:
+                    lesson_dict['status'] = lesson_dict.pop('user_facing_status')
+                
                 ext_links_val = lesson_dict.get("external_links")
                 if isinstance(ext_links_val, str):
                     try:
@@ -506,6 +542,10 @@ def get_course(db: Client, course_id: str) -> Optional[Dict[str, Any]]:
             except json.JSONDecodeError:
                 print(f"Warning: Could not parse lesson_outline_plan for course {course_id}")
                 course_data['lesson_outline_plan'] = None # Or handle as an error
+        
+        # Map db 'user_facing_status' to pydantic 'status' for the course
+        if 'user_facing_status' in course_data:
+            course_data['status'] = course_data.pop('user_facing_status')
 
         return course_data
         
@@ -570,6 +610,9 @@ def get_all_courses(db: Client, skip: int = 0, limit: int = 100) -> List[Dict[st
                 except json.JSONDecodeError:
                     print(f"Warning: Could not parse lesson_outline_plan for course {course.get('id')}")
                     course['lesson_outline_plan'] = None
+            # Map db 'user_facing_status' to pydantic 'status' for the course
+            if 'user_facing_status' in course:
+                course['status'] = course.pop('user_facing_status')
                     
         return courses_data
         
@@ -586,7 +629,25 @@ def update_course(db: Client, course_id: str, course_update_request: CourseUpdat
     """
     update_data_dict = course_update_request.model_dump(exclude_unset=True)
     
-    if not update_data_dict:
+    # If CourseUpdateRequest.status is UserCourseStatus, it will be in update_data_dict['status']
+    # This will then be part of the db.table(COURSE_TABLE).update(update_data_dict)
+    # Ensure the DB column for this is 'user_facing_status'.
+    # If 'status' in update_data_dict is for UserCourseStatus, it should be written to 'user_facing_status' column
+    if 'status' in update_data_dict and isinstance(update_data_dict['status'], UserCourseStatus):
+        update_data_dict['user_facing_status'] = update_data_dict.pop('status')
+    elif 'status' in update_data_dict: 
+        # If status is present but not UserCourseStatus, it might be an old CourseStatus for generation.
+        # This path should be avoided by updating CourseUpdateRequest model.
+        # For now, let's assume it might be generation_status if it's CourseStatus type.
+        # Or, more safely, remove it if ambiguous, or specifically map if intended for generation_status
+        print(f"Warning: 'status' field in CourseUpdateRequest has unexpected type: {type(update_data_dict['status'])}. It should be UserCourseStatus. This field will be ignored for now unless it's a CourseStatus for generation_status.")
+        if isinstance(update_data_dict['status'], CourseStatus): # if it's the old enum
+             update_data_dict['generation_status'] = update_data_dict.pop('status')
+        else:
+            update_data_dict.pop('status') # Remove ambiguous status
+
+
+    if not update_data_dict and not new_lesson_outline_plan: # Check if any actual update values exist
         return get_course(db, course_id) # Return existing course if no update data
 
     # Separate lesson_outline_plan for special handling if it exists
@@ -637,7 +698,8 @@ def update_course(db: Client, course_id: str, course_update_request: CourseUpdat
                     "title": lesson_outline.planned_title,
                     "planned_description": lesson_outline.planned_description,
                     "order_in_course": lesson_outline.order,
-                    "status": LessonStatus.PLANNED.value # New lessons start as planned
+                    "generation_status": LessonStatus.PLANNED.value, # New lessons start as planned
+                    "status": UserLessonStatus.NOT_STARTED.value # User status is not started
                 }
                 insert_lesson_resp = db.table(LESSONS_TABLE).insert(lesson_placeholder_data).execute()
                 if not insert_lesson_resp.data:
@@ -675,8 +737,8 @@ def create_course_with_team(db: Client, initial_title: str, subject: str, diffic
     use_tools = not isinstance(selected_model, Ollama)
     print(f"Agent tools will be {'ENABLED' if use_tools else 'DISABLED'} for this run.")
 
-    planner_tools = [Crawl4aiTools(max_length=5), WikipediaTools()] if use_tools else []
-    lesson_tools = [YouTubeTools(), Crawl4aiTools(max_length=3), WikipediaTools()] if use_tools else []
+    planner_tools = [WikipediaTools()] if use_tools else []
+    lesson_tools = [YouTubeTools(), WikipediaTools()] if use_tools else []
 
     # 1. CoursePlannerAgent Configuration - Updated expected_output
     planner_agent = Agent(
@@ -767,26 +829,26 @@ def create_course_with_team(db: Client, initial_title: str, subject: str, diffic
             # Basic check if it looks like a JSON object before parsing
             if not json_string_to_parse_sanitized.strip().startswith("{") or not json_string_to_parse_sanitized.strip().endswith("}"):
                 print(f"Warning: String to be parsed does not appear to be a JSON object after extraction/sanitization: ''{json_string_to_parse_sanitized[:200]}...'")
-                # Nevertheless, we will attempt to parse it as json.loads() is the ultimate validator.
 
             course_plan_json = json.loads(json_string_to_parse_sanitized)
 
         except json.JSONDecodeError as e:
-            # Provide detailed error information including the problematic string segment
-            # e.doc is the input doc to json.loads, e.pos is the index of the error
-            context_window = 30 # Show N chars before and after error position
+            context_window = 30 
             start_index = max(0, e.pos - context_window)
+            # e.doc is the string that was passed to json.loads()
             end_index = min(len(e.doc), e.pos + context_window)
             error_context = e.doc[start_index:end_index]
-            # Escape newlines in context for cleaner log printing
             error_context_escaped = error_context.replace('\n', '\\n').replace('\r', '\\r')
 
             print(f"Error: Failed to parse JSON output from CoursePlannerAgent. Details below.")
             print(f"  Message: {e.msg}")
             print(f"  At Line: {e.lineno}, Column: {e.colno} (Position: {e.pos})")
-            print(f"  Error context (around pos {e.pos}): '...{error_context_escaped}...'")
-            print(f"  String attempted for parsing (first 500 chars of sanitized version): ''{json_string_to_parse_sanitized[:500]}...'")
-            print(f"  Original Planner Raw Output (first 500 chars): ''{getattr(planner_response_obj, 'content', '')[:500]}...'")
+            print(f"  Error context (from e.doc, around pos {e.pos}): '...{error_context_escaped}...'")
+            # json_string_to_parse_sanitized is identical to e.doc in this context
+            print(f"  String attempted for parsing (length {len(json_string_to_parse_sanitized)}, first 1000 chars): ''{json_string_to_parse_sanitized[:1000]}...''")
+            if len(json_string_to_parse_sanitized) > 1000:
+                print(f"  String attempted for parsing (last 200 chars): ''...{json_string_to_parse_sanitized[-200:]}''")
+            print(f"  Original Planner Raw Output (first 500 chars): ''{getattr(planner_response_obj, 'content', '')[:500]}...''")
             return None
 
         if not course_plan_json or "lesson_outline_plan" not in course_plan_json or not isinstance(course_plan_json["lesson_outline_plan"], list):
@@ -827,7 +889,8 @@ def create_course_with_team(db: Client, initial_title: str, subject: str, diffic
         "difficulty": difficulty.value,
         "icon": course_plan_json.get("courseIcon"),
         "lesson_outline_plan": course_plan_json["lesson_outline_plan"], # Save the plan
-        "status": CourseStatus.DRAFT.value, # Initial status
+        "generation_status": CourseStatus.DRAFT.value, # Initial generation status
+        "user_facing_status": UserCourseStatus.NOT_STARTED.value, # Renamed 'status' to 'user_facing_status' for DB
         # "level": None, # Or some default
     }
 
@@ -882,7 +945,8 @@ def create_course_with_team(db: Client, initial_title: str, subject: str, diffic
             "title": lesson_outline.planned_title,
             "planned_description": lesson_outline.planned_description,
             "order_in_course": lesson_outline.order,
-            "status": LessonStatus.PLANNED.value 
+            "generation_status": LessonStatus.PLANNED.value,
+            "user_facing_status": UserLessonStatus.NOT_STARTED.value # Renamed 'status' to 'user_facing_status' for DB
         }
         
         try:
@@ -897,7 +961,7 @@ def create_course_with_team(db: Client, initial_title: str, subject: str, diffic
             print(f"Placeholder lesson created with ID: {lesson_id}")
 
             # Update status to 'generating' before calling agent
-            db.table(LESSONS_TABLE).update({"status": LessonStatus.GENERATING.value}).eq("id", lesson_id).execute()
+            db.table(LESSONS_TABLE).update({"generation_status": LessonStatus.GENERATING.value}).eq("id", lesson_id).execute()
 
             print(f"Generating content for lesson: '{lesson_outline.planned_title}' (ID: {lesson_id})")
             lesson_content_query = (
@@ -916,25 +980,34 @@ def create_course_with_team(db: Client, initial_title: str, subject: str, diffic
                 lesson_update_data = {
                     "content_md": lesson_content_response.content,
                     "external_links": json.dumps(extracted_links), # Ensure it's a JSON string for Supabase JSONB
-                    "status": LessonStatus.COMPLETED.value
+                    "generation_status": LessonStatus.COMPLETED.value
+                    # User-facing status (status) remains UserLessonStatus.NOT_STARTED
                 }
                 db.table(LESSONS_TABLE).update(lesson_update_data).eq("id", lesson_id).execute()
                 print(f"Content generated and saved for lesson ID: {lesson_id}")
             else:
                 print(f"Failed to generate content for lesson ID: {lesson_id}. Error: {getattr(lesson_content_response, 'error', 'No content')}")
-                db.table(LESSONS_TABLE).update({"status": LessonStatus.GENERATION_FAILED.value}).eq("id", lesson_id).execute()
+                db.table(LESSONS_TABLE).update({"generation_status": LessonStatus.GENERATION_FAILED.value}).eq("id", lesson_id).execute()
         
         except Exception as e_lesson:
             print(f"Exception during lesson processing for '{lesson_outline.planned_title}': {e_lesson}")
             import traceback
             traceback.print_exc()
             if 'lesson_id' in locals(): # If placeholder was created, mark as failed
-                 db.table(LESSONS_TABLE).update({"status": LessonStatus.GENERATION_FAILED.value}).eq("id", lesson_id).execute()
+                 db.table(LESSONS_TABLE).update({"generation_status": LessonStatus.GENERATION_FAILED.value}).eq("id", lesson_id).execute()
             # Continue to the next lesson
             continue
 
-    # 5. Return the full course data by fetching it using get_course
-    # This ensures the response includes the generated lessons list and is consistent.
+    # Lesson generation loop has finished.
+    # Simply update the course generation_status to COMPLETED.
+    # This indicates the orchestration process for lesson generation is done.
+    # Individual lesson statuses will provide details on their specific outcomes.
+    print(f"Lesson generation loop finished for course ID: {created_course_id}. Setting course generation_status to COMPLETED.")
+    db.table(COURSE_TABLE).update({
+        "generation_status": CourseStatus.COMPLETED.value
+    }).eq("id", created_course_id).execute()
+    
+    # Fetch and return the full course data.
     print(f"Course creation process finished for course ID: {created_course_id}. Fetching complete data...")
     return get_course(db, created_course_id)
 
@@ -963,7 +1036,7 @@ def regenerate_lesson(db: Client, lesson_id: str) -> Optional[Dict[str, Any]]:
                 print(f"Error: Lesson {lesson_id} has no course_id and course data was not joined correctly.")
                 # Update lesson status to reflect this critical error
                 db.table(LESSONS_TABLE).update({
-                    "status": LessonStatus.GENERATION_FAILED.value,
+                    "generation_status": LessonStatus.GENERATION_FAILED.value,
                     "content_md": "Regeneration failed: Missing course association."
                 }).eq("id", lesson_id).execute()
                 return None
@@ -973,7 +1046,7 @@ def regenerate_lesson(db: Client, lesson_id: str) -> Optional[Dict[str, Any]]:
             if not parent_course_response.data:
                 print(f"Error: Parent course {course_id_from_lesson} not found for lesson {lesson_id}.")
                 db.table(LESSONS_TABLE).update({
-                    "status": LessonStatus.GENERATION_FAILED.value,
+                    "generation_status": LessonStatus.GENERATION_FAILED.value,
                     "content_md": "Regeneration failed: Parent course not found."
                 }).eq("id", lesson_id).execute()
                 return None
@@ -982,7 +1055,7 @@ def regenerate_lesson(db: Client, lesson_id: str) -> Optional[Dict[str, Any]]:
         if not course_info or not course_info.get('subject') or not course_info.get('difficulty'):
             print(f"Error: Critical course information (subject or difficulty) is missing for lesson {lesson_id}. Course info: {course_info}")
             db.table(LESSONS_TABLE).update({
-                "status": LessonStatus.GENERATION_FAILED.value,
+                "generation_status": LessonStatus.GENERATION_FAILED.value,
                 "content_md": "Regeneration failed: Course subject/difficulty missing."
             }).eq("id", lesson_id).execute()
             return None
@@ -999,16 +1072,17 @@ def regenerate_lesson(db: Client, lesson_id: str) -> Optional[Dict[str, Any]]:
 
         # 2. Update lesson status to 'generating' and clear old content/links
         db.table(LESSONS_TABLE).update({
-            "status": LessonStatus.GENERATING.value, 
+            "generation_status": LessonStatus.GENERATING.value, 
             "content_md": "Generating new content...",
             "external_links": json.dumps([]) # Clear previous links
+            # User-facing status (status) remains unchanged during regeneration
         }).eq("id", lesson_id).execute()
         print(f"Set status to 'generating' for lesson ID: {lesson_id}")
 
         # 3. Get AI model and configure LessonContentAgent
         selected_model = get_agent_model()
         use_tools = not isinstance(selected_model, Ollama)
-        lesson_tools = [YouTubeTools(), Crawl4aiTools(max_length=3), WikipediaTools()] if use_tools else []
+        lesson_tools = [YouTubeTools(), WikipediaTools()] if use_tools else []
 
         lesson_agent = Agent(
             model=selected_model,
@@ -1056,13 +1130,18 @@ def regenerate_lesson(db: Client, lesson_id: str) -> Optional[Dict[str, Any]]:
             lesson_update_data = {
                 "content_md": lesson_content_response.content,
                 "external_links": json.dumps(extracted_links), 
-                "status": LessonStatus.COMPLETED.value
+                "generation_status": LessonStatus.COMPLETED.value
+                # User-facing status (status) remains unchanged
             }
             update_response = db.table(LESSONS_TABLE).update(lesson_update_data).eq("id", lesson_id).execute()
 
             if update_response.data:
                 print(f"Content successfully regenerated and saved for lesson ID: {lesson_id}")
-                return _parse_lesson_external_links(update_response.data[0]) 
+                # Prepare data for Pydantic model (map user_facing_status if present from DB direct read)
+                updated_lesson_data = update_response.data[0]
+                if 'user_facing_status' in updated_lesson_data:
+                    updated_lesson_data['status'] = updated_lesson_data.pop('user_facing_status')
+                return _parse_lesson_external_links(updated_lesson_data) 
             else:
                 db_error_message = "Unknown DB error during update."
                 if update_response.error:
@@ -1070,12 +1149,19 @@ def regenerate_lesson(db: Client, lesson_id: str) -> Optional[Dict[str, Any]]:
                 print(f"Failed to save regenerated content for lesson ID: {lesson_id}. DB Error: {db_error_message}")
                 # Update status to failed, but keep the (unsaved) generated content for inspection if needed, or a specific error message.
                 db.table(LESSONS_TABLE).update({
-                    "status": LessonStatus.GENERATION_FAILED.value, 
+                    "generation_status": LessonStatus.GENERATION_FAILED.value, 
                     "content_md": f"Failed to save after regeneration. DB Error: {db_error_message}. \\nOriginal generated content (first 200 chars): {lesson_content_response.content[:200]}..."
                 }).eq("id", lesson_id).execute()
                 # Fetch the lesson to return its current (failed) state
                 failed_lesson_state_response = db.table(LESSONS_TABLE).select("*").eq("id", lesson_id).maybe_single().execute()
-                return _parse_lesson_external_links(failed_lesson_state_response.data if failed_lesson_state_response.data else None)
+                
+                # Prepare data for Pydantic model
+                failed_lesson_data_for_pydantic = None
+                if failed_lesson_state_response.data:
+                    failed_lesson_data_for_pydantic = failed_lesson_state_response.data
+                    if 'user_facing_status' in failed_lesson_data_for_pydantic:
+                         failed_lesson_data_for_pydantic['status'] = failed_lesson_data_for_pydantic.pop('user_facing_status')
+                return _parse_lesson_external_links(failed_lesson_data_for_pydantic)
         else:
             agent_error_msg = "Agent returned no content or an invalid response."
             if lesson_content_response and hasattr(lesson_content_response, 'error') and lesson_content_response.error:
@@ -1085,11 +1171,18 @@ def regenerate_lesson(db: Client, lesson_id: str) -> Optional[Dict[str, Any]]:
             
             print(f"Failed to generate content for lesson ID: {lesson_id}. Agent Error: {agent_error_msg}")
             db.table(LESSONS_TABLE).update({
-                "status": LessonStatus.GENERATION_FAILED.value,
+                "generation_status": LessonStatus.GENERATION_FAILED.value,
                 "content_md": f"Content generation failed. Agent error: {agent_error_msg}"
             }).eq("id", lesson_id).execute()
             failed_lesson_state_response = db.table(LESSONS_TABLE).select("*").eq("id", lesson_id).maybe_single().execute()
-            return _parse_lesson_external_links(failed_lesson_state_response.data if failed_lesson_state_response.data else None)
+            
+            # Prepare data for Pydantic model
+            failed_lesson_data_for_pydantic = None
+            if failed_lesson_state_response.data:
+                failed_lesson_data_for_pydantic = failed_lesson_state_response.data
+                if 'user_facing_status' in failed_lesson_data_for_pydantic:
+                    failed_lesson_data_for_pydantic['status'] = failed_lesson_data_for_pydantic.pop('user_facing_status')
+            return _parse_lesson_external_links(failed_lesson_data_for_pydantic)
 
     except Exception as e:
         print(f"An unexpected exception occurred during lesson regeneration for ID {lesson_id}: {e}")
@@ -1100,7 +1193,7 @@ def regenerate_lesson(db: Client, lesson_id: str) -> Optional[Dict[str, Any]]:
         if 'lesson_id' in locals() and lesson_id:
             try:
                 db.table(LESSONS_TABLE).update({
-                    "status": LessonStatus.GENERATION_FAILED.value,
+                    "generation_status": LessonStatus.GENERATION_FAILED.value,
                     "content_md": f"Critical exception during regeneration: {str(e)[:500]}"
                 }).eq("id", lesson_id).execute()
             except Exception as db_update_err:
@@ -1110,3 +1203,94 @@ def regenerate_lesson(db: Client, lesson_id: str) -> Optional[Dict[str, Any]]:
 # End of the regenerate_lesson function.
 # The file might end here if regenerate_lesson was the last function.
 # If there's more code below this in your actual file, it's not part of this edit.
+
+def _check_and_update_course_completion_status(db: Client, course_id: str) -> None:
+    """Checks if all lessons in a course are completed and updates the course status accordingly."""
+    try:
+        # Fetch the course to ensure it exists and to get its current user-facing status
+        course_response = db.table(COURSE_TABLE).select("id, user_facing_status").eq("id", course_id).maybe_single().execute() # Changed "status" to "user_facing_status"
+        if not course_response.data:
+            print(f"_check_and_update_course_completion_status: Course {course_id} not found.")
+            return
+        
+        current_course_user_status = course_response.data.get('user_facing_status') # Changed "status" to "user_facing_status"
+
+        # Fetch all lessons for the course, specifically their user-facing status
+        lessons_response = db.table(LESSONS_TABLE).select("id, user_facing_status").eq("course_id", course_id).execute()
+        
+        new_course_user_status_value = None
+
+        if not lessons_response.data or not lessons_response.data: # Check if data is empty list
+            # No lessons in the course.
+            # If it was COMPLETED or IN_PROGRESS, set to NOT_STARTED. Otherwise, it's already NOT_STARTED or some other initial state.
+            if current_course_user_status in [UserCourseStatus.COMPLETED.value, UserCourseStatus.IN_PROGRESS.value]:
+                new_course_user_status_value = UserCourseStatus.NOT_STARTED.value
+            elif not current_course_user_status: # Handles if status was null
+                 new_course_user_status_value = UserCourseStatus.NOT_STARTED.value
+            # else keep current_course_user_status (which should ideally be NOT_STARTED by default for new courses)
+        else:
+            lessons_statuses = [lesson['user_facing_status'] for lesson in lessons_response.data]
+            
+            all_lessons_completed = all(status == UserLessonStatus.COMPLETED.value for status in lessons_statuses)
+            any_lesson_in_progress = any(status == UserLessonStatus.IN_PROGRESS.value for status in lessons_statuses)
+            any_lesson_completed = any(status == UserLessonStatus.COMPLETED.value for status in lessons_statuses)
+
+            if all_lessons_completed:
+                new_course_user_status_value = UserCourseStatus.COMPLETED.value
+            elif any_lesson_in_progress or any_lesson_completed: # If any lesson is started (in_progress or completed)
+                new_course_user_status_value = UserCourseStatus.IN_PROGRESS.value
+            else: # All lessons are NOT_STARTED
+                new_course_user_status_value = UserCourseStatus.NOT_STARTED.value
+
+        if new_course_user_status_value and new_course_user_status_value != current_course_user_status:
+            db.table(COURSE_TABLE).update({"user_facing_status": new_course_user_status_value}).eq("id", course_id).execute()
+            print(f"Course {course_id} user-facing status updated from '{current_course_user_status}' to: '{new_course_user_status_value}'")
+        elif new_course_user_status_value == current_course_user_status:
+            print(f"Course {course_id} user-facing status '{current_course_user_status}' is already correct. No update needed.")
+        else:
+            # This case implies new_course_user_status_value is None, meaning no change was determined as necessary
+            # e.g. course has no lessons and status is already NOT_STARTED.
+            print(f"Course {course_id} user-facing status '{current_course_user_status}' requires no change based on current logic path.")
+
+
+    except Exception as e:
+        print(f"Error in _check_and_update_course_completion_status for course {course_id}: {e}")
+
+def update_lesson_user_status(db: Client, lesson_id: str, new_user_status: UserLessonStatus) -> Optional[Dict[str, Any]]:
+    """Updates the user-facing status of a lesson and then checks course completion."""
+    try:
+        # Validate if new_user_status is a valid UserLessonStatus enum member
+        if not isinstance(new_user_status, UserLessonStatus):
+            try:
+                new_user_status_enum = UserLessonStatus(new_user_status) # Try to cast if string is passed
+            except ValueError:
+                print(f"Invalid UserLessonStatus provided: {new_user_status}")
+                return None
+        else:
+            new_user_status_enum = new_user_status
+
+        lesson_update_response = db.table(LESSONS_TABLE).update({"user_facing_status": new_user_status_enum.value}).eq("id", lesson_id).execute()
+        
+        if lesson_update_response.data and len(lesson_update_response.data) > 0:
+            updated_lesson_data = lesson_update_response.data[0]
+            course_id = updated_lesson_data.get("course_id")
+            if course_id:
+                _check_and_update_course_completion_status(db, course_id)
+            
+            # Map db 'user_facing_status' to pydantic 'status' for the returned lesson object
+            if 'user_facing_status' in updated_lesson_data:
+                updated_lesson_data['status'] = updated_lesson_data.pop('user_facing_status')
+            # Also ensure generation_status is correctly named if fetched directly (though not explicitly modified here)
+            if 'generation_status' in updated_lesson_data:
+                 pass # Assuming it's already correctly named from the DB or not relevant to this function's core task
+
+            return _parse_lesson_external_links(updated_lesson_data)
+        else:
+            print(f"Failed to update user-facing status for lesson {lesson_id}. Response: {lesson_update_response.error}")
+            return None
+            
+    except Exception as e:
+        print(f"Error updating lesson user-facing status for {lesson_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        return None

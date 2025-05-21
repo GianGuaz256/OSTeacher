@@ -1,0 +1,5 @@
+-   [ ] Avere speaking dell'AI quando si genera un corso "interattivo"
+-   [ ] Pensare ad aggiungere esercizi e quiz all'interno delle lezioni
+-   [ ] Pensare alla generazione di video rispetto ai contenuti presentati
+-   [ ] Avere un editor interattivo per le lezioni in cui fare gli esercizi
+-   [ ] Aggiungere un sistema di feedback per le lezioni
