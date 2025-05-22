@@ -39,11 +39,12 @@ const MermaidBlock: React.FC<MermaidBlockProps> = ({ code }) => {
         // mermaid.parse(code); // This throws an error if invalid, which is good.
                                 // However, mermaid.run also handles errors internally for specific blocks.
 
-        // Tell Mermaid to render all elements with class "mermaid" within the ref
-        // Or, if we only have one diagram, we can directly pass the ref
-        mermaid.run({
-          nodes: [mermaidDivRef.current],
-        }).catch(e => {
+        // Tell Mermaid to render all elements with class "mermaid".
+        // Since mermaid.initialize({ startOnLoad: false }) is used,
+        // mermaid.run() will process elements with class="mermaid" that have not yet been processed.
+        // The key={key} on the parent div ensures the .mermaid div is fresh for processing.
+        mermaid.run() // MODIFIED_LINE: No longer passing nodes, let mermaid find .mermaid elements
+          .catch(e => {
             console.error("Mermaid run error:", e);
             setError(e instanceof Error ? e.message : String(e));
         });

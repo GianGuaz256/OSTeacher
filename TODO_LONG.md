@@ -1,5 +1,3 @@
--   [ ] Avere speaking dell'AI quando si genera un corso "interattivo"
--   [ ] Pensare ad aggiungere esercizi e quiz all'interno delle lezioni
--   [ ] Pensare alla generazione di video rispetto ai contenuti presentati
--   [ ] Avere un editor interattivo per le lezioni in cui fare gli esercizi
--   [ ] Aggiungere un sistema di feedback per le lezioni
+-   [ ] Implement AI speaking when generating an "interactive" course. A solution could be to use an external API like `elevenlabs` to generate the course based on the requirements. For pronunciation, another API like `Deepgram` or `AssemblyAI` could be used.
+-   [ ] Consider generating videos related to the presented content. The videos should be generated based on the lesson content and should be saved in the DB to be shown on the lesson detail page. APIs from services like `fal.ai` could be used, although `Synthesia` exists but does not seem to have a public API.
+-   [ ] For coding, an editor and a cloud or local VM could be used to execute the code and see if the proposed solution is correct. Services like `sandbox` or `E2B` could be used.
