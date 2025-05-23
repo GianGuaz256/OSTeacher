@@ -122,4 +122,15 @@ export async function updateLessonUserStatus(lessonId: string, status: UserLesso
     }
     return null;
   }
+}
+
+// New function to retry course generation
+export async function retryCourseGeneration(courseId: string): Promise<Course | null> {
+  try {
+    const response = await apiClient.post<Course>(`/courses/${courseId}/retry`);
+    return response.data;
+  } catch (error) {
+    console.error(`Failed to retry course generation for course ${courseId}:`, error);
+    return null;
+  }
 } 

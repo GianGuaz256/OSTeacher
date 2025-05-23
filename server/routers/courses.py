@@ -29,6 +29,20 @@ def create_new_course(request_data: models.CourseCreateRequest, db: Client = Dep
     # No longer returning content, so the parsing and response model are not needed here.
     return # FastAPI will return a 200 OK with no body by default if status_code is set in decorator and function returns None
 
+@router.post("/{course_id}/retry", response_model=models.Course)
+def retry_course_generation(course_id: str, db: Client = Depends(get_db_client)):
+    """Retry course generation by continuing from where it left off - generates content for failed or planned lessons."""
+    retried_course = crud.retry_course_generation(db=db, course_id=course_id)
+    if retried_course is None:
+        # Check if course exists
+        existing_course = crud.get_course(db=db, course_id=course_id)
+        if existing_course is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Course with id {course_id} not found")
+        else:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Failed to retry course generation. Check server logs for details.")
+    
+    return models.Course(**retried_course)
+
 @router.get("/", response_model=List[models.Course])
 def read_all_courses(skip: int = 0, limit: int = 100, db: Client = Depends(get_db_client)):
     """Retrieve all courses."""

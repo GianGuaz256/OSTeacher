@@ -75,17 +75,11 @@ async function DashboardPage() {
                  {course.icon && <p className="text-2xl mt-2">{course.icon}</p>}
               </CardContent>
               <CardFooter>
-                {course.generation_status === CourseStatus.DRAFT ? (
-                  <Button className="w-full" disabled>
-                    Generating...
+                <Link href={`/courses/${course.id}`} className="w-full" passHref>
+                  <Button className="w-full">
+                    View Course
                   </Button>
-                ) : (
-                  <Link href={`/courses/${course.id}`} className="w-full" passHref>
-                    <Button className="w-full">
-                      View Course
-                    </Button>
-                  </Link>
-                )}
+                </Link>
               </CardFooter>
             </Card>
           ))}

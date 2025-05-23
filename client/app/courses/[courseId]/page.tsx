@@ -6,6 +6,7 @@ import { notFound } from 'next/navigation';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { CheckCircle2, Hourglass, AlertTriangle, RefreshCw, HelpCircle, ArrowLeft, Circle } from 'lucide-react';
+import CourseRetryButton from './CourseRetryButton';
 
 export const dynamic = 'force-dynamic';
 
@@ -30,6 +31,84 @@ async function CourseDetailPage({ params }: CourseDetailPageProps) {
     notFound();
   }
 
+  // Helper function to check if retry button should be shown
+  const shouldShowRetryButton = () => {
+    // Show retry button if:
+    // 1. Course is not currently being generated as a whole
+    // 2. There are lessons that need generation (planned, failed, or stuck generating)
+    // 3. Course generation has failed OR course is completed OR course is in draft with problematic lessons
+    // 4. Course is completed but has fewer lessons than planned
+    
+    const isGenerationFailed = course.generation_status === CourseStatus.GENERATION_FAILED;
+    const isGenerationCompleted = course.generation_status === CourseStatus.COMPLETED;
+    const isGenerationDraft = course.generation_status === CourseStatus.DRAFT;
+    const isCurrentlyGenerating = course.generation_status === CourseStatus.GENERATING;
+    
+    // Don't show button if course is currently being generated
+    if (isCurrentlyGenerating) return false;
+    
+    // Check if there are lessons that need generation or are stuck
+    const hasFailedOrPlannedLessons = course.lessons.some(lesson => 
+      lesson.generation_status === LessonStatus.GENERATION_FAILED || 
+      lesson.generation_status === LessonStatus.PLANNED
+    );
+    
+    // Check for lessons stuck in generating status
+    const hasStuckGeneratingLessons = course.lessons.some(lesson => 
+      lesson.generation_status === LessonStatus.GENERATING
+    );
+    
+    // Check if course was created more than 5 minutes ago (indicating potential timeout)
+    const courseAge = course.created_at ? Date.now() - new Date(course.created_at).getTime() : 0;
+    const isOldEnoughForTimeout = courseAge > 5 * 60 * 1000; // 5 minutes in milliseconds
+    
+    // Check if course is completed but has fewer lessons than planned
+    const plannedLessonCount = course.lesson_outline_plan ? course.lesson_outline_plan.length : 0;
+    const actualLessonCount = course.lessons.length;
+    const completedLessonCount = course.lessons.filter(lesson => 
+      lesson.generation_status === LessonStatus.COMPLETED
+    ).length;
+    const hasFewerLessonsThanPlanned = isGenerationCompleted && plannedLessonCount > 0 && 
+      (actualLessonCount < plannedLessonCount || completedLessonCount < plannedLessonCount);
+    
+    // Debug logging
+    console.log('Course retry button debug:', {
+      courseGenerationStatus: course.generation_status,
+      isGenerationFailed,
+      isGenerationCompleted,
+      isGenerationDraft,
+      isCurrentlyGenerating,
+      hasFailedOrPlannedLessons,
+      hasStuckGeneratingLessons,
+      courseAge: Math.round(courseAge / 1000 / 60 * 10) / 10, // minutes with 1 decimal
+      isOldEnoughForTimeout,
+      courseCreatedAt: course.created_at,
+      plannedLessonCount,
+      actualLessonCount,
+      completedLessonCount,
+      hasFewerLessonsThanPlanned,
+      lessonStatuses: course.lessons.map(l => ({
+        title: l.title,
+        generation_status: l.generation_status,
+        status: l.status
+      }))
+    });
+    
+    // Show button if there are lessons that need attention AND one of these conditions:
+    // - Course generation failed, OR
+    // - Course generation completed but has incomplete lessons, OR  
+    // - Course is in draft and has lessons that are stuck generating for 5+ minutes, OR
+    // - Course is in draft and has failed/planned lessons, OR
+    // - Course is completed but has fewer lessons than planned
+    const hasProblematicLessons = hasFailedOrPlannedLessons || (hasStuckGeneratingLessons && isOldEnoughForTimeout);
+    const shouldShow = (hasProblematicLessons && (isGenerationFailed || isGenerationCompleted || isGenerationDraft)) || 
+                       hasFewerLessonsThanPlanned;
+    
+    console.log('Should show retry button:', shouldShow);
+    
+    return shouldShow;
+  };
+
   return (
     <div className="container mx-auto p-4">
       <div className="mb-4 flex justify-start">
@@ -39,6 +118,7 @@ async function CourseDetailPage({ params }: CourseDetailPageProps) {
           </Button>
         </Link>
       </div>
+      
       <header className="mb-8 text-center">
         <h1 className="text-4xl font-bold tracking-tight">{course.title}</h1>
         {course.icon && <p className="text-5xl my-4">{course.icon}</p>}
@@ -98,6 +178,12 @@ async function CourseDetailPage({ params }: CourseDetailPageProps) {
               </span>
             </p>
           )}
+          
+          {/* Retry Button - Client Component */}
+          {shouldShowRetryButton() && (
+            <CourseRetryButton courseId={course.id} />
+          )}
+          
           {course.lesson_outline_plan && course.lesson_outline_plan.length > 0 && (
             <details className="pt-2 group">
               <summary className="font-semibold cursor-pointer hover:text-primary list-none">

@@ -736,6 +736,12 @@ def create_course_with_team(db: Client, initial_title: str, subject: str, diffic
 
     use_tools = not isinstance(selected_model, Ollama)
     print(f"Agent tools will be {'ENABLED' if use_tools else 'DISABLED'} for this run.")
+    
+    # Check for small Ollama models that might have truncation issues
+    if isinstance(selected_model, Ollama):
+        model_id = getattr(selected_model, 'id', '')
+        if '1b' in model_id.lower() or '2b' in model_id.lower():
+            print(f"WARNING: Using small model '{model_id}' which may truncate responses. Consider using a larger model for course generation.")
 
     planner_tools = [WikipediaTools()] if use_tools else []
     lesson_tools = [YouTubeTools(), WikipediaTools()] if use_tools else []
@@ -750,7 +756,8 @@ def create_course_with_team(db: Client, initial_title: str, subject: str, diffic
             "Propose an engaging final course title.",
             "Write a concise and compelling overall course description.",
             "Suggest a single, relevant UTF-8 emoji as the course icon.",
-            "Outline between 5 and 10 lessons (inclusive). For each lesson, provide an 'order' (0-indexed integer), a 'planned_title' (string), and a 'planned_description' (1-2 sentence string).", # Adjusted lesson count for faster testing, revert if needed
+            "Outline between 5 and 10 lessons (inclusive). For each lesson, provide an 'order' (0-indexed integer), a 'planned_title' (string), and a 'planned_description' (1-2 sentence string).",
+            "IMPORTANT: Keep descriptions brief to avoid response truncation. Each lesson description should be 1-2 sentences maximum.",
             "You MUST output your response exclusively in a valid JSON format as specified in the 'expected_output'. Do not include any other text or explanations before or after the JSON object."
         ],
         expected_output=( # Updated expected output for lesson_outline_plan
@@ -782,6 +789,7 @@ def create_course_with_team(db: Client, initial_title: str, subject: str, diffic
             return None
 
         planner_content_str = planner_response_obj.content
+        print(f"Planner agent returned {len(planner_content_str)} characters of content")
         json_string_to_parse = "" # Initialize to empty string
 
         try:
@@ -805,31 +813,29 @@ def create_course_with_team(db: Client, initial_title: str, subject: str, diffic
                         json_string_to_parse = stripped_content
                         print(f"Content appears to be a JSON object directly (after stripping wrapper whitespace/text).")
                     else:
-                        # 4. Last resort: use the original content string, hoping it's parseable or json.loads will give a good error.
-                        json_string_to_parse = planner_content_str 
-                        print(f"No markdown fences or clear JSON object found. Attempting to parse the content string as is or find JSON within.")
-                        # More aggressive search for a JSON object within the string if it wasn't a clean block
-                        json_search_within = re.search(r'({\s*[\s\S]*?\s*})', json_string_to_parse) # Find first { to its corresponding }
+                        # 4. Last resort: use regex to find the most complete JSON object
+                        json_search_within = re.search(r'(\{[\s\S]*\})', planner_content_str)
                         if json_search_within:
                             json_string_to_parse = json_search_within.group(1)
                             print("Found a JSON-like structure within the content string.")
                         else:
-                            print("Could not identify a clear JSON structure even within the content string.")
-                            # json_string_to_parse remains as planner_content_str here
+                            print("Could not identify a clear JSON structure in the content.")
+                            json_string_to_parse = planner_content_str  # Last resort
             
-            if not json_string_to_parse:
-                 # This case should ideally not be hit if planner_content_str has content.
-                 # If it is, it means all extraction attempts failed to yield a non-empty string.
-                 print("Warning: json_string_to_parse is empty after extraction attempts. Using original planner_content_str.")
-                 json_string_to_parse = planner_content_str
+            if not json_string_to_parse.strip():
+                print("Warning: json_string_to_parse is empty after extraction attempts. Using original planner_content_str.")
+                json_string_to_parse = planner_content_str
 
-            # Sanitize C0 control characters from the string that will be parsed
-            json_string_to_parse_sanitized = re.sub(r'[\x00-\x1F\x7F]', '', json_string_to_parse)
+            # More careful sanitization - only remove null bytes and other truly problematic control chars
+            # but preserve newlines and other whitespace that might be important for JSON
+            json_string_to_parse_sanitized = re.sub(r'[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]', '', json_string_to_parse)
             
-            # Basic check if it looks like a JSON object before parsing
-            if not json_string_to_parse_sanitized.strip().startswith("{") or not json_string_to_parse_sanitized.strip().endswith("}"):
-                print(f"Warning: String to be parsed does not appear to be a JSON object after extraction/sanitization: ''{json_string_to_parse_sanitized[:200]}...'")
+            # Basic validation before parsing
+            stripped_json = json_string_to_parse_sanitized.strip()
+            if not stripped_json.startswith("{") or not stripped_json.endswith("}"):
+                print(f"Warning: String doesn't appear to be a complete JSON object: starts with '{stripped_json[:10]}...', ends with '...{stripped_json[-10:]}'")
 
+            print(f"Attempting to parse JSON string of length {len(json_string_to_parse_sanitized)}")
             course_plan_json = json.loads(json_string_to_parse_sanitized)
 
         except json.JSONDecodeError as e:
@@ -844,16 +850,68 @@ def create_course_with_team(db: Client, initial_title: str, subject: str, diffic
             print(f"  Message: {e.msg}")
             print(f"  At Line: {e.lineno}, Column: {e.colno} (Position: {e.pos})")
             print(f"  Error context (from e.doc, around pos {e.pos}): '...{error_context_escaped}...'")
-            # json_string_to_parse_sanitized is identical to e.doc in this context
-            print(f"  String attempted for parsing (length {len(json_string_to_parse_sanitized)}, first 1000 chars): ''{json_string_to_parse_sanitized[:1000]}...''")
-            if len(json_string_to_parse_sanitized) > 1000:
-                print(f"  String attempted for parsing (last 200 chars): ''...{json_string_to_parse_sanitized[-200:]}''")
-            print(f"  Original Planner Raw Output (first 500 chars): ''{getattr(planner_response_obj, 'content', '')[:500]}...''")
-            return None
+            
+            # Check if this looks like a truncated JSON (unterminated string)
+            if "Unterminated string" in e.msg or "Expecting" in e.msg:
+                print(f"  This appears to be a truncated JSON response. The agent output may have been cut off.")
+                print(f"  Full agent response length: {len(planner_content_str)} characters")
+                print(f"  JSON string length after extraction: {len(json_string_to_parse_sanitized)} characters")
+                
+                # Try to find and use a smaller, complete JSON object within the response
+                # Look for a shorter but complete JSON structure
+                shorter_json_match = re.search(r'\{[^{}]*"courseTitle"[^{}]*"courseDescription"[^{}]*"courseIcon"[^{}]*"lesson_outline_plan"[^{}]*\}', planner_content_str, re.DOTALL)
+                if shorter_json_match:
+                    print("  Attempting to parse a shorter, potentially complete JSON structure...")
+                    try:
+                        shorter_json = shorter_json_match.group(0)
+                        # Clean up the shorter JSON
+                        shorter_json_clean = re.sub(r'[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]', '', shorter_json)
+                        course_plan_json = json.loads(shorter_json_clean)
+                        print("  Successfully parsed shorter JSON structure!")
+                    except json.JSONDecodeError as e2:
+                        print(f"  Shorter JSON also failed to parse: {e2.msg}")
+                        course_plan_json = None
+                else:
+                    print("  Could not find a shorter complete JSON structure.")
+                    course_plan_json = None
+            else:
+                course_plan_json = None
+            
+            if not course_plan_json:
+                # json_string_to_parse_sanitized is identical to e.doc in this context
+                print(f"  String attempted for parsing (length {len(json_string_to_parse_sanitized)}, first 1000 chars): ''{json_string_to_parse_sanitized[:1000]}...''")
+                if len(json_string_to_parse_sanitized) > 1000:
+                    print(f"  String attempted for parsing (last 200 chars): ''...{json_string_to_parse_sanitized[-200:]}''")
+                print(f"  Original Planner Raw Output (first 500 chars): ''{getattr(planner_response_obj, 'content', '')[:500]}...''")
+                return None
 
         if not course_plan_json or "lesson_outline_plan" not in course_plan_json or not isinstance(course_plan_json["lesson_outline_plan"], list):
             print(f"Error: Invalid course plan structure from CoursePlannerAgent. Plan data: {course_plan_json}")
-            return None
+            
+            # Try one more time with a simpler request if the first attempt failed
+            print("Attempting a retry with a simpler course plan request...")
+            try:
+                simpler_query = f"Create a simple course plan for '{subject}' with title '{initial_title}' at {difficulty.value} difficulty. Make exactly 5 lessons. Return ONLY valid JSON with courseTitle, courseDescription, courseIcon, and lesson_outline_plan array."
+                retry_response = planner_agent.run(simpler_query)
+                
+                if retry_response and retry_response.content:
+                    print(f"Retry response length: {len(retry_response.content)} characters")
+                    # Try to parse the retry response
+                    retry_json_match = re.search(r'\{[\s\S]*\}', retry_response.content)
+                    if retry_json_match:
+                        retry_json_str = retry_json_match.group(0)
+                        retry_json_clean = re.sub(r'[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]', '', retry_json_str)
+                        course_plan_json = json.loads(retry_json_clean)
+                        print("Successfully parsed retry response!")
+                    else:
+                        print("Could not find valid JSON in retry response")
+                        return None
+                else:
+                    print("Retry attempt also failed")
+                    return None
+            except Exception as retry_err:
+                print(f"Retry attempt failed with exception: {retry_err}")
+                return None
 
         num_planned_lessons = len(course_plan_json["lesson_outline_plan"])
         if not (5 <= num_planned_lessons <= 10): # Ensure this matches instructions
@@ -1201,8 +1259,206 @@ def regenerate_lesson(db: Client, lesson_id: str) -> Optional[Dict[str, Any]]:
         
         return None
 # End of the regenerate_lesson function.
-# The file might end here if regenerate_lesson was the last function.
-# If there's more code below this in your actual file, it's not part of this edit.
+
+def retry_course_generation(db: Client, course_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Retries course generation by deleting all existing lessons and recreating them from scratch.
+    Uses the course's lesson_outline_plan JSON to recreate all lessons.
+    Starts the generation process in the background and returns immediately.
+    """
+    try:
+        # 1. Fetch the course to ensure it exists and get the lesson plan
+        course_response = db.table(COURSE_TABLE).select("*").eq("id", course_id).maybe_single().execute()
+        if not course_response.data:
+            print(f"Course with ID {course_id} not found for retry.")
+            return None
+        
+        course_data = course_response.data
+        course_subject = course_data.get('subject', 'General')
+        lesson_outline_plan = course_data.get('lesson_outline_plan', [])
+        
+        if not lesson_outline_plan or not isinstance(lesson_outline_plan, list):
+            print(f"Course {course_id} has no valid lesson_outline_plan. Cannot retry generation.")
+            return None
+        
+        # Parse difficulty
+        course_difficulty_str = course_data.get('difficulty', 'medium')
+        try:
+            course_difficulty_enum = CourseDifficulty(course_difficulty_str.lower())
+        except ValueError:
+            course_difficulty_enum = CourseDifficulty.MEDIUM
+        
+        print(f"Starting complete retry generation for course: {course_data.get('title')} (ID: {course_id})")
+        print(f"Will recreate {len(lesson_outline_plan)} lessons from the course plan")
+        
+        # 2. Delete all existing lessons for this course
+        print(f"Deleting all existing lessons for course {course_id}")
+        delete_response = db.table(LESSONS_TABLE).delete().eq("course_id", course_id).execute()
+        print(f"Deleted lessons for course {course_id}")
+        
+        # 3. Update course status to 'generating'
+        db.table(COURSE_TABLE).update({
+            "generation_status": CourseStatus.GENERATING.value
+        }).eq("id", course_id).execute()
+        
+        # 4. Start background generation process
+        import threading
+        
+        def generate_all_lessons_background():
+            """Background function to recreate and generate all lessons"""
+            try:
+                # Set up the lesson content agent
+                selected_model = get_agent_model()
+                use_tools = not isinstance(selected_model, Ollama)
+                lesson_tools = [YouTubeTools(), WikipediaTools()] if use_tools else []
+
+                lesson_agent = Agent(
+                    model=selected_model, 
+                    tools=lesson_tools,
+                    description="You are an expert AI content creator, specializing in generating the core teaching material for individual online course lessons.",
+                    instructions=[
+                        "Your primary task is to generate the main educational content for a specific online course lesson, given its title, description, the overall course subject, and target difficulty level.",
+                        "The lesson content MUST be comprehensive enough for approximately 15 minutes of student engagement. This means providing detailed explanations, multiple illustrative examples, and thorough coverage of the lesson's topics.",
+                        "Structure the lesson clearly with an introduction, the main body of content, and a concluding summary. Use Markdown headings (e.g., ##, ###) appropriately to organize sections within the lesson body.",
+                        "The output MUST be valid Markdown text, suitable for direct rendering. Ensure all Markdown block elements (paragraphs, lists, code blocks, Mermaid diagrams) are separated by at least one blank line for optimal readability and rendering.",
+                        "**Content Requirements:**",
+                        "  - **Detailed Explanations:** Break down complex concepts into understandable parts. Explain the 'why' behind concepts, not just the 'what'.",
+                        "  - **Practical Code Examples:** If the topic is technical or programming-related, you MUST include relevant code examples in Markdown code blocks (e.g., ```python\\n# Your code here\\nprint('Example')\\n```). Provide at least 2-3 varied code examples where applicable, explaining each one.",
+                        "  - **Mermaid Diagrams:** To enhance understanding of processes, architectures, relationships, or flowcharts, you MUST include at least one Mermaid diagram within a `mermaid` fenced code block (e.g., ```mermaid\\ngraph TD; A[Concept A] --> B(Concept B);\\n```) where visually appropriate. Explain the diagram.",
+                        "  - **Illustrative Content:** Use analogies, real-world scenarios, or step-by-step walkthroughs to make the content engaging and easier to grasp.",
+                        "IMPORTANT: Your response should be ONLY the Markdown content itself. Do NOT include the leading ` ```markdown ` or trailing ` ``` ` delimiters in your output.",
+                        "Do NOT add any other predefined structural sections like '## Learning Objectives' (unless you deem it a natural part of the introduction), '## Description', etc., beyond the requested intro, body, summary structure.",
+                        "Do NOT repeat the lesson title as a primary heading (e.g., using `# Lesson Title`) within your generated content; the title is handled externally.",
+                        "Tailor the depth of explanation, complexity of examples, and language used to the specified overall course subject and difficulty level provided in the query.",
+                        "Remember, your entire output will be treated as the body of the lesson. Focus on creating rich, detailed, and practical content."
+                    ],
+                    markdown=True,
+                    reasoning=False,
+                    show_tool_calls=False,
+                    add_datetime_to_instructions=True
+                )
+                
+                # Create and generate lessons sequentially based on the plan
+                for lesson_plan_item in lesson_outline_plan:
+                    if not isinstance(lesson_plan_item, dict):
+                        print(f"Skipping invalid lesson plan item: {lesson_plan_item}")
+                        continue
+                    
+                    lesson_order = lesson_plan_item.get('order', 0)
+                    lesson_title = lesson_plan_item.get('planned_title', f'Lesson {lesson_order + 1}')
+                    planned_description = lesson_plan_item.get('planned_description', 'No description available')
+                    
+                    try:
+                        # Create lesson placeholder
+                        lesson_placeholder_data = {
+                            "course_id": course_id,
+                            "title": lesson_title,
+                            "planned_description": planned_description,
+                            "order_in_course": lesson_order,
+                            "generation_status": LessonStatus.PLANNED.value,
+                            "user_facing_status": UserLessonStatus.NOT_STARTED.value
+                        }
+                        
+                        print(f"Creating lesson {lesson_order + 1}: '{lesson_title}'")
+                        placeholder_response = db.table(LESSONS_TABLE).insert(lesson_placeholder_data).execute()
+                        
+                        if not placeholder_response.data or not placeholder_response.data[0].get('id'):
+                            print(f"Failed to create placeholder for lesson '{lesson_title}'. Skipping.")
+                            continue
+                        
+                        lesson_id = placeholder_response.data[0]['id']
+                        print(f"Created lesson placeholder with ID: {lesson_id}")
+                        
+                        # Update lesson status to 'generating'
+                        db.table(LESSONS_TABLE).update({
+                            "generation_status": LessonStatus.GENERATING.value
+                        }).eq("id", lesson_id).execute()
+
+                        print(f"Generating content for lesson {lesson_order + 1}: '{lesson_title}' (ID: {lesson_id})")
+                        lesson_content_query = (
+                            f"Lesson Title: {lesson_title}\\n"
+                            f"Lesson Description: {planned_description}\\n"
+                            f"Overall Course Subject: {course_subject}\\n"
+                            f"Overall Course Difficulty: {course_difficulty_enum.value}"
+                        )
+                        
+                        lesson_content_response = lesson_agent.run(lesson_content_query)
+                        
+                        if lesson_content_response and lesson_content_response.content:
+                            # Extract links (simple regex for Markdown links)
+                            extracted_links = re.findall(r"\\[[^\\]]*?\\]\\(([^)]+?)\\)", lesson_content_response.content)
+                            
+                            lesson_update_data = {
+                                "content_md": lesson_content_response.content,
+                                "external_links": json.dumps(extracted_links),
+                                "generation_status": LessonStatus.COMPLETED.value
+                            }
+                            db.table(LESSONS_TABLE).update(lesson_update_data).eq("id", lesson_id).execute()
+                            print(f"Content successfully generated for lesson {lesson_order + 1} (ID: {lesson_id})")
+                        else:
+                            print(f"Failed to generate content for lesson {lesson_order + 1} (ID: {lesson_id}). Error: {getattr(lesson_content_response, 'error', 'No content')}")
+                            db.table(LESSONS_TABLE).update({
+                                "generation_status": LessonStatus.GENERATION_FAILED.value
+                            }).eq("id", lesson_id).execute()
+                    
+                    except Exception as e_lesson:
+                        print(f"Exception during lesson creation/generation for lesson {lesson_order + 1} '{lesson_title}': {e_lesson}")
+                        import traceback
+                        traceback.print_exc()
+                        # If we have a lesson_id, mark it as failed
+                        if 'lesson_id' in locals():
+                            try:
+                                db.table(LESSONS_TABLE).update({
+                                    "generation_status": LessonStatus.GENERATION_FAILED.value
+                                }).eq("id", lesson_id).execute()
+                            except:
+                                pass
+                        # Continue to the next lesson
+                        continue
+                
+                # Update course generation status to COMPLETED
+                print(f"Background lesson generation finished for course ID: {course_id}. Setting course generation_status to COMPLETED.")
+                db.table(COURSE_TABLE).update({
+                    "generation_status": CourseStatus.COMPLETED.value
+                }).eq("id", course_id).execute()
+                
+            except Exception as e:
+                print(f"Exception in background lesson generation for course ID {course_id}: {e}")
+                import traceback
+                traceback.print_exc()
+                
+                # Update course status to failed
+                try:
+                    db.table(COURSE_TABLE).update({
+                        "generation_status": CourseStatus.GENERATION_FAILED.value
+                    }).eq("id", course_id).execute()
+                except Exception as db_update_err:
+                    print(f"Failed to update course status to GENERATION_FAILED after background exception: {db_update_err}")
+        
+        # Start the background thread
+        background_thread = threading.Thread(target=generate_all_lessons_background)
+        background_thread.daemon = True  # Dies when main thread dies
+        background_thread.start()
+        
+        print(f"Background lesson generation started for course ID: {course_id}")
+        
+        # Return the current course state immediately (with no lessons since we deleted them)
+        return get_course(db, course_id)
+        
+    except Exception as e:
+        print(f"An unexpected exception occurred during course retry generation setup for ID {course_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        # Update course status to failed if possible
+        try:
+            db.table(COURSE_TABLE).update({
+                "generation_status": CourseStatus.GENERATION_FAILED.value
+            }).eq("id", course_id).execute()
+        except Exception as db_update_err:
+            print(f"Additionally, failed to update course status to GENERATION_FAILED after exception: {db_update_err}")
+        
+        return None
 
 def _check_and_update_course_completion_status(db: Client, course_id: str) -> None:
     """Checks if all lessons in a course are completed and updates the course status accordingly."""
