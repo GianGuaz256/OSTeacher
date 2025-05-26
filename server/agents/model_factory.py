@@ -1,11 +1,13 @@
 from agno.models.anthropic import Claude
 from agno.models.ollama import Ollama
+from agno.models.openai import OpenAIChat
 from ..config.settings import settings
 
 def get_agent_model():
     """Determines which LLM to use based on environment variables."""
     provider = settings.AGENT_MODEL_PROVIDER
     anthropic_api_key = settings.ANTHROPIC_API_KEY
+    openai_api_key = settings.OPENAI_API_KEY
 
     if provider == "ollama":
         ollama_model_id = settings.OLLAMA_MODEL_ID
@@ -29,5 +31,12 @@ def get_agent_model():
         print(f"Using Claude model: {claude_model_id}")
         return Claude(id=claude_model_id, api_key=anthropic_api_key)
     
+    elif provider == "openai":
+        if not openai_api_key:
+            raise ValueError("AGENT_MODEL_PROVIDER is 'openai' but OPENAI_API_KEY is not set.")
+        openai_model_id = settings.OPENAI_MODEL_ID
+        print(f"Using OpenAI model: {openai_model_id}")
+        return OpenAIChat(id=openai_model_id, api_key=openai_api_key)
+    
     else:
-        raise ValueError(f"Unsupported AGENT_MODEL_PROVIDER: {provider}. Choose 'claude' or 'ollama'.") 
+        raise ValueError(f"Unsupported AGENT_MODEL_PROVIDER: {provider}. Choose 'claude', 'ollama', or 'openai'.") 

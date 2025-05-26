@@ -2,6 +2,7 @@ from agno.agent import Agent
 from agno.tools.wikipedia import WikipediaTools
 from agno.tools.youtube import YouTubeTools
 from agno.models.ollama import Ollama
+from agno.models.openai import OpenAIChat
 from .model_factory import get_agent_model
 
 class LessonContentAgent:
@@ -14,6 +15,7 @@ class LessonContentAgent:
     
     def _get_tools(self):
         """Get tools based on model capabilities."""
+        # Enable tools for Claude and OpenAI models, disable for Ollama
         use_tools = not isinstance(self.model, Ollama)
         return [YouTubeTools(), WikipediaTools()] if use_tools else []
     
