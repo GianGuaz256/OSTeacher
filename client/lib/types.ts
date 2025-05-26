@@ -40,6 +40,74 @@ export enum CourseDifficulty {
   HARD = "hard",
 }
 
+export enum CourseField {
+  TECHNOLOGY = "technology",
+  SCIENCE = "science",
+  MATHEMATICS = "mathematics",
+  BUSINESS = "business",
+  ARTS = "arts",
+  LANGUAGE = "language",
+  HEALTH = "health",
+  HISTORY = "history",
+  PHILOSOPHY = "philosophy",
+  ENGINEERING = "engineering",
+  DESIGN = "design",
+  MUSIC = "music",
+  LITERATURE = "literature",
+  PSYCHOLOGY = "psychology",
+  ECONOMICS = "economics",
+}
+
+// Helper function to get emoji for each field
+export const getFieldEmoji = (field: CourseField | string | undefined): string => {
+  if (!field) return '';
+  
+  const fieldEmojiMap: Record<string, string> = {
+    [CourseField.TECHNOLOGY]: '💻',
+    [CourseField.SCIENCE]: '🔬',
+    [CourseField.MATHEMATICS]: '📊',
+    [CourseField.BUSINESS]: '💼',
+    [CourseField.ARTS]: '🎨',
+    [CourseField.LANGUAGE]: '🗣️',
+    [CourseField.HEALTH]: '🏥',
+    [CourseField.HISTORY]: '📚',
+    [CourseField.PHILOSOPHY]: '🤔',
+    [CourseField.ENGINEERING]: '⚙️',
+    [CourseField.DESIGN]: '✨',
+    [CourseField.MUSIC]: '🎵',
+    [CourseField.LITERATURE]: '📖',
+    [CourseField.PSYCHOLOGY]: '🧠',
+    [CourseField.ECONOMICS]: '📈',
+  };
+  
+  return fieldEmojiMap[field] || '';
+};
+
+// Helper function to get display name for field
+export const getFieldDisplayName = (field: CourseField | string | undefined): string => {
+  if (!field) return '';
+  
+  const fieldMap: Record<string, string> = {
+    [CourseField.TECHNOLOGY]: 'Technology',
+    [CourseField.SCIENCE]: 'Science',
+    [CourseField.MATHEMATICS]: 'Mathematics',
+    [CourseField.BUSINESS]: 'Business',
+    [CourseField.ARTS]: 'Arts',
+    [CourseField.LANGUAGE]: 'Language',
+    [CourseField.HEALTH]: 'Health',
+    [CourseField.HISTORY]: 'History',
+    [CourseField.PHILOSOPHY]: 'Philosophy',
+    [CourseField.ENGINEERING]: 'Engineering',
+    [CourseField.DESIGN]: 'Design',
+    [CourseField.MUSIC]: 'Music',
+    [CourseField.LITERATURE]: 'Literature',
+    [CourseField.PSYCHOLOGY]: 'Psychology',
+    [CourseField.ECONOMICS]: 'Economics',
+  };
+  
+  return fieldMap[field] || field;
+};
+
 // New model for items in the lesson_outline_plan, mirroring server/models.py
 export interface LessonOutlineItem {
   order: number;
@@ -72,6 +140,7 @@ export interface Course {
   description: string;
   icon?: string; // For emoji or custom icon identifier
   difficulty?: CourseDifficulty;
+  field?: CourseField; // New field for field of study
   lesson_outline_plan?: LessonOutlineItem[]; // New field
   lessons: Lesson[];
   generation_status?: CourseStatus; // New field for course generation status
@@ -100,6 +169,7 @@ export interface CourseUpdate {
   status?: UserCourseStatus;
   level?: CourseLevel;
   icon?: string;
+  field?: CourseField; // New field for field of study
   lesson_outline_plan?: LessonOutlineItem[]; // Allow updating the plan
   // lessons?: Lesson[]; // Removed from server's CourseUpdateRequest, reflecting here
 } 

@@ -42,6 +42,24 @@ class CourseDifficulty(str, Enum):
     MEDIUM = "medium"
     HARD = "hard"
 
+class CourseField(str, Enum):
+    """Predefined fields of study for courses."""
+    TECHNOLOGY = "technology"
+    SCIENCE = "science"
+    MATHEMATICS = "mathematics"
+    BUSINESS = "business"
+    ARTS = "arts"
+    LANGUAGE = "language"
+    HEALTH = "health"
+    HISTORY = "history"
+    PHILOSOPHY = "philosophy"
+    ENGINEERING = "engineering"
+    DESIGN = "design"
+    MUSIC = "music"
+    LITERATURE = "literature"
+    PSYCHOLOGY = "psychology"
+    ECONOMICS = "economics"
+
 # New model for items in the lesson_outline_plan
 class LessonOutlineItem(BaseModel):
     order: int
@@ -67,6 +85,7 @@ class Course(BaseModel):
     description: str
     icon: Optional[str] = None
     difficulty: Optional[CourseDifficulty] = None
+    field: Optional[CourseField] = None  # New field for field of study
     lesson_outline_plan: Optional[List[LessonOutlineItem]] = None # New field to store the plan
     lessons: List[Lesson] = Field(default_factory=list) # This will be populated from the separate 'lessons' table
     # The 'lessons' field above is for API response. It's not directly stored in 'courses' table as JSON blob anymore.
@@ -91,6 +110,7 @@ class CourseUpdateRequest(BaseModel): # Renamed from CourseUpdate for clarity
     status: Optional[UserCourseStatus] = None # Changed from CourseStatus to UserCourseStatus
     level: Optional[CourseLevel] = None
     icon: Optional[str] = None
+    field: Optional[CourseField] = None  # New field for field of study
     lesson_outline_plan: Optional[List[LessonOutlineItem]] = None # Allow updating the plan
     # lessons: Optional[List[Lesson]] = None # Removed: Lesson content updates will be handled differently (e.g., regeneration or more granular lesson endpoints)
 

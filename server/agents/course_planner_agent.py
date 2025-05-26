@@ -27,6 +27,7 @@ class CoursePlannerAgent:
                 "Propose an engaging final course title.",
                 "Write a concise and compelling overall course description.",
                 "Suggest a single, relevant UTF-8 emoji as the course icon.",
+                "Determine the most appropriate field of study from these options: technology, science, mathematics, business, arts, language, health, history, philosophy, engineering, design, music, literature, psychology, economics.",
                 "Outline between 5 and 10 lessons (inclusive). For each lesson, provide an 'order' (0-indexed integer), a 'planned_title' (string), and a 'planned_description' (1-2 sentence string).",
                 "IMPORTANT: Keep descriptions brief to avoid response truncation. Each lesson description should be 1-2 sentences maximum.",
                 "You MUST output your response exclusively in a valid JSON format as specified in the 'expected_output'. Do not include any other text or explanations before or after the JSON object."
@@ -36,6 +37,7 @@ class CoursePlannerAgent:
                 '  "courseTitle": "string",'
                 '  "courseDescription": "string",'
                 '  "courseIcon": "string (single UTF-8 emoji)",'
+                '  "courseField": "string (one of: technology, science, mathematics, business, arts, language, health, history, philosophy, engineering, design, music, literature, psychology, economics)",'
                 '  "lesson_outline_plan": ['
                 '    { "order": "integer", "planned_title": "string", "planned_description": "string" }'
                 '  ]'

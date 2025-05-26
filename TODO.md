@@ -23,7 +23,7 @@
 
 ## 26-05-2025
 - [x] Refactor server code to be more future proof and scalable
-- [ ] When the server generates a course, there should be also "field" variable on the DB in Supabase. This variable should be defined by the AI model and serve as a "field of study" for the course. Fields should be static and predefined in the server. This field will be useful in the client, specifically in the course list page, where the courses will be filtered by the field. Between the "Available Courses" and the actual list of courses there should be a dropdown to filter the courses by field.
+- [x] When the server generates a course, there should be also "field" variable on the DB in Supabase. This variable should be defined by the AI model and serve as a "field of study" for the course. Fields should be static and predefined in the server. This field will be useful in the client, specifically in the course list page, where the courses will be filtered by the field. Between the "Available Courses" and the actual list of courses there should be a dropdown to filter the courses by field.
 
 ## Future
 - [ ] Create the main page of the website, the one that will be shown when the user will open the website. It must be a landing page with a "Get Started" button that will redirect to the course list page.

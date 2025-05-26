@@ -16,7 +16,7 @@ from ..utils.helpers import extract_external_links
 from ..models import (
     CourseDifficulty, CourseStatus, UserCourseStatus, 
     LessonStatus, UserLessonStatus, LessonOutlineItem,
-    CourseUpdateRequest
+    CourseUpdateRequest, CourseField
 )
 
 class CourseService:
@@ -221,12 +221,22 @@ class CourseService:
 
     def _prepare_course_data(self, course_id: str, plan_data: Dict, subject: str, difficulty: CourseDifficulty) -> Dict[str, Any]:
         """Prepare course data for database insertion."""
+        # Parse the field from the AI response
+        course_field = None
+        if "courseField" in plan_data:
+            try:
+                course_field = CourseField(plan_data["courseField"].lower())
+            except ValueError:
+                print(f"Warning: Invalid field '{plan_data['courseField']}' from AI. Using None.")
+                course_field = None
+        
         return {
             "id": course_id,
             "title": plan_data.get("courseTitle", "Untitled Course"),
             "subject": subject,
             "description": plan_data.get("courseDescription", f"A course on {subject}."),
             "difficulty": difficulty.value,
+            "field": course_field.value if course_field else None,
             "icon": plan_data.get("courseIcon"),
             "lesson_outline_plan": plan_data["lesson_outline_plan"],
             "generation_status": CourseStatus.DRAFT.value,
