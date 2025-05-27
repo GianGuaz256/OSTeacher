@@ -58,6 +58,70 @@ export enum CourseField {
   ECONOMICS = "economics",
 }
 
+// Quiz-related types
+export interface QuizQuestion {
+  question: string;
+  questionType: "text";
+  answerSelectionType: "single";
+  answers: string[];
+  correctAnswer: string; // "1", "2", "3", or "4"
+  messageForCorrectAnswer: string;
+  messageForIncorrectAnswer: string;
+  explanation: string;
+  point: string; // "10" or "20"
+}
+
+export interface QuizData {
+  quizTitle: string;
+  quizSynopsis: string;
+  progressBarColor?: string;
+  nrOfQuestions: string;
+  questions: QuizQuestion[];
+}
+
+export interface Quiz {
+  id: string;
+  course_id: string;
+  lesson_id?: string; // Optional for final quizzes
+  quiz_data: QuizData;
+  time_limit_seconds: number;
+  passing_score: number;
+  is_final_quiz: boolean;
+  passed?: boolean | null; // null = not attempted, true = passed, false = failed
+  is_active: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface QuizAttempt {
+  quiz_id: string;
+  user_answers: Record<number, string>; // question index -> selected answer
+  score: number;
+  passed: boolean;
+  completed_at: string;
+  time_taken_seconds: number;
+}
+
+export interface QuizCreateRequest {
+  course_id: string;
+  lesson_id?: string;
+  quiz_data: QuizData;
+  time_limit_seconds?: number;
+  passing_score?: number;
+  is_final_quiz?: boolean;
+}
+
+export interface QuizUpdateRequest {
+  quiz_data?: QuizData;
+  time_limit_seconds?: number;
+  passing_score?: number;
+  is_active?: boolean;
+}
+
+export interface QuizStatusUpdate {
+  passed: boolean;
+}
+
 // Helper function to get emoji for each field
 export const getFieldEmoji = (field: CourseField | string | undefined): string => {
   if (!field) return '';
@@ -113,6 +177,7 @@ export interface LessonOutlineItem {
   order: number;
   planned_title: string;
   planned_description?: string;
+  has_quiz?: boolean; // Added quiz flag
 }
 
 export interface Lesson {
@@ -125,6 +190,7 @@ export interface Lesson {
   generation_status: LessonStatus; // New field for generation process
   status: UserLessonStatus; // User-facing status
   order_in_course?: number; // New field
+  has_quiz?: boolean; // Added quiz flag
 
   // Frontend specific: slug for URL, derived from title or index
   // This might be less relevant if using lesson.id for navigation
@@ -148,12 +214,14 @@ export interface Course {
   level?: CourseLevel;   // Added from CourseUpdate model possibility
   created_at?: string; // Added, consider if datetime parsing is needed client-side
   updated_at?: string; // Added
+  has_quizzes?: boolean; // Added quiz flag
 }
 
 export interface CourseCreateRequest {
   title: string;
   subject: string;
   difficulty: CourseDifficulty;
+  has_quizzes?: boolean; // Added quiz flag
 }
 
 export interface CourseCreationResponse {

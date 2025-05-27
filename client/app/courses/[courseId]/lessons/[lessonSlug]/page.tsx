@@ -1,8 +1,8 @@
 'use client';
 
 import Link from 'next/link';
-import { getCourseById, regenerateLesson, updateLessonUserStatus } from '@/lib/api';
-import type { Course, Lesson } from '@/lib/types';
+import { getCourseById, regenerateLesson, updateLessonUserStatus, getQuizByLessonId } from '@/lib/api';
+import type { Course, Lesson, Quiz } from '@/lib/types';
 import { LessonStatus, UserLessonStatus } from '@/lib/types';
 import { notFound, useRouter } from 'next/navigation';
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,7 @@ import { CheckCircle2, Hourglass, RefreshCcw, AlertTriangle, HelpCircle, Refresh
 import { useEffect, useState, useCallback } from 'react';
 import MarkdownRenderer from '@/components/ui/MarkdownRenderer';
 import YouTubeEmbed from '@/components/custom/YouTubeEmbed';
+import QuizButton from '@/components/quiz/QuizButton';
 import Lottie from "lottie-react";
 
 interface LessonDetailPageProps {
@@ -23,9 +24,11 @@ export default function LessonDetailPage({ params }: LessonDetailPageProps) {
   const router = useRouter();
   const [course, setCourse] = useState<Course | null>(null);
   const [lesson, setLesson] = useState<Lesson | null>(null);
+  const [quiz, setQuiz] = useState<Quiz | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isRegenerating, setIsRegenerating] = useState(false);
   const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
+  const [isLoadingQuiz, setIsLoadingQuiz] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showCompletionAnimation, setShowCompletionAnimation] = useState(false);
 
@@ -77,6 +80,20 @@ export default function LessonDetailPage({ params }: LessonDetailPageProps) {
         const currentLesson = fetchedCourse.lessons.find(l => l.id === params.lessonSlug);
         if (currentLesson) {
           setLesson(currentLesson);
+          
+          // Fetch quiz data if lesson has a quiz
+          if (currentLesson.has_quiz) {
+            setIsLoadingQuiz(true);
+            try {
+              const quizData = await getQuizByLessonId(currentLesson.id);
+              setQuiz(quizData);
+            } catch (quizError) {
+              console.error('Error fetching quiz:', quizError);
+              // Don't set error state for quiz failures, just log it
+            } finally {
+              setIsLoadingQuiz(false);
+            }
+          }
         } else {
           console.error(`Lesson with ID ${params.lessonSlug} not found in course ${params.courseId}`);
           notFound();
@@ -313,6 +330,20 @@ export default function LessonDetailPage({ params }: LessonDetailPageProps) {
       <article className="w-full bg-card p-2 sm:p-4 md:p-6 shadow-md rounded-md border">
         <MarkdownRenderer markdown={finalMarkdown} />
       </article>
+
+      {/* Quiz Section */}
+      {lesson.has_quiz && (
+        <section className="mt-8 pt-4 border-t">
+          <h3 className="text-xl font-semibold mb-4 text-center">Lesson Quiz</h3>
+          <QuizButton
+            courseId={course.id}
+            lessonId={lesson.id}
+            quiz={quiz}
+            isLoading={isLoadingQuiz}
+            className="max-w-2xl mx-auto"
+          />
+        </section>
+      )}
 
       {(youtubeLinks.length > 0 || otherLinks.length > 0) && (
         <section className="mt-8 pt-4 border-t">

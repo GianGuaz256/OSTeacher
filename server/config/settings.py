@@ -29,6 +29,7 @@ class Settings:
     # Tables
     COURSE_TABLE = "courses"
     LESSONS_TABLE = "lessons"
+    QUIZZES_TABLE = "quizzes"
     
     # Course Generation
     MIN_LESSONS = 5
@@ -37,5 +38,11 @@ class Settings:
     
     # Claude Model ID
     CLAUDE_MODEL_ID = "claude-3-7-sonnet-20250219"
+    
+    # API Retry Configuration
+    MAX_RETRIES: int = int(os.getenv("MAX_RETRIES", "3"))
+    RETRY_DELAY: float = float(os.getenv("RETRY_DELAY", "2.0"))
+    RETRY_BACKOFF_FACTOR: float = float(os.getenv("RETRY_BACKOFF_FACTOR", "2.0"))
+    MAX_RETRY_DELAY: float = float(os.getenv("MAX_RETRY_DELAY", "60.0"))
 
 settings = Settings() 

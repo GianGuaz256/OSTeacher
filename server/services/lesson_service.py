@@ -2,12 +2,16 @@ from typing import Optional, Dict, Any
 from supabase import Client
 import json
 from agno.run.response import RunResponse
+import logging
 
 from ..repositories.course_repository import CourseRepository
 from ..repositories.lesson_repository import LessonRepository
 from ..agents.lesson_content_agent import LessonContentAgent
 from ..utils.helpers import extract_external_links
+from ..utils.retry_utils import is_retryable_error
 from ..models import CourseDifficulty, LessonStatus, UserLessonStatus, UserCourseStatus
+
+logger = logging.getLogger(__name__)
 
 class LessonService:
     """Service for lesson business logic."""
@@ -24,7 +28,7 @@ class LessonService:
             lesson_data = self.lesson_repo.get_with_course_info(lesson_id)
             
             if not lesson_data:
-                print(f"Lesson with ID {lesson_id} not found for regeneration.")
+                logger.error(f"Lesson with ID {lesson_id} not found for regeneration.")
                 return None
         
             current_lesson_title = lesson_data.get('title')
@@ -35,29 +39,32 @@ class LessonService:
             if not isinstance(course_info, dict):
                 course_id_from_lesson = lesson_data.get('course_id')
                 if not course_id_from_lesson:
-                    print(f"Error: Lesson {lesson_id} has no course_id and course data was not joined correctly.")
+                    error_msg = "Regeneration failed: Missing course association."
+                    logger.error(f"Error: Lesson {lesson_id} has no course_id and course data was not joined correctly.")
                     self.lesson_repo.update(lesson_id, {
                         "generation_status": LessonStatus.GENERATION_FAILED.value,
-                        "content_md": "Regeneration failed: Missing course association."
+                        "content_md": error_msg
                     })
                     return None
 
-                print(f"Course data not fully joined for lesson {lesson_id}. Fetching course {course_id_from_lesson} separately.")
+                logger.info(f"Course data not fully joined for lesson {lesson_id}. Fetching course {course_id_from_lesson} separately.")
                 parent_course_data = self.course_repo.get_by_id(course_id_from_lesson)
                 if not parent_course_data:
-                    print(f"Error: Parent course {course_id_from_lesson} not found for lesson {lesson_id}.")
+                    error_msg = "Regeneration failed: Parent course not found."
+                    logger.error(f"Error: Parent course {course_id_from_lesson} not found for lesson {lesson_id}.")
                     self.lesson_repo.update(lesson_id, {
                         "generation_status": LessonStatus.GENERATION_FAILED.value,
-                        "content_md": "Regeneration failed: Parent course not found."
+                        "content_md": error_msg
                     })
                     return None
                 course_info = parent_course_data
 
             if not course_info or not course_info.get('subject') or not course_info.get('difficulty'):
-                print(f"Error: Critical course information (subject or difficulty) is missing for lesson {lesson_id}. Course info: {course_info}")
+                error_msg = "Regeneration failed: Course subject/difficulty missing."
+                logger.error(f"Error: Critical course information (subject or difficulty) is missing for lesson {lesson_id}. Course info: {course_info}")
                 self.lesson_repo.update(lesson_id, {
                     "generation_status": LessonStatus.GENERATION_FAILED.value,
-                    "content_md": "Regeneration failed: Course subject/difficulty missing."
+                    "content_md": error_msg
                 })
                 return None
 
@@ -67,7 +74,7 @@ class LessonService:
             try:
                 course_difficulty_enum_val = CourseDifficulty(course_difficulty_str).value if course_difficulty_str else CourseDifficulty.MEDIUM.value
             except ValueError:
-                print(f"Warning: Invalid course difficulty '{course_difficulty_str}' for lesson {lesson_id}. Defaulting to MEDIUM.")
+                logger.warning(f"Invalid course difficulty '{course_difficulty_str}' for lesson {lesson_id}. Defaulting to MEDIUM.")
                 course_difficulty_enum_val = CourseDifficulty.MEDIUM.value
 
             # 2. Update lesson status to 'generating' and clear old content/links
@@ -76,7 +83,7 @@ class LessonService:
                 "content_md": "Generating new content...",
                 "external_links": json.dumps([])
             })
-            print(f"Set status to 'generating' for lesson ID: {lesson_id}")
+            logger.info(f"Set status to 'generating' for lesson ID: {lesson_id}")
 
             # 3. Configure LessonContentAgent and generate content
             lesson_agent = LessonContentAgent()
@@ -89,7 +96,7 @@ class LessonService:
                 f"Overall Course Difficulty: {course_difficulty_enum_val}"
             )
             
-            print(f"Generating content for lesson: '{current_lesson_title}' (ID: {lesson_id})")
+            logger.info(f"Generating content for lesson: '{current_lesson_title}' (ID: {lesson_id})")
             lesson_content_response = lesson_agent.run(lesson_content_query)
             
             # 5. Process response and update lesson
@@ -106,43 +113,54 @@ class LessonService:
                 updated_lesson = self.lesson_repo.update(lesson_id, lesson_update_data)
 
                 if updated_lesson:
-                    print(f"Content successfully regenerated and saved for lesson ID: {lesson_id}")
+                    logger.info(f"Content successfully regenerated and saved for lesson ID: {lesson_id}")
                     return updated_lesson
                 else:
-                    print(f"Failed to save regenerated content for lesson ID: {lesson_id}")
+                    error_msg = f"Failed to save after regeneration. Original generated content (first 200 chars): {lesson_content_response.content[:200]}..."
+                    logger.error(f"Failed to save regenerated content for lesson ID: {lesson_id}")
                     self.lesson_repo.update(lesson_id, {
                         "generation_status": LessonStatus.GENERATION_FAILED.value, 
-                        "content_md": f"Failed to save after regeneration. Original generated content (first 200 chars): {lesson_content_response.content[:200]}..."
+                        "content_md": error_msg
                     })
                     return self.lesson_repo.get_by_id(lesson_id)
             else:
+                # Handle error response from agent
                 agent_error_msg = "Agent returned no content or an invalid response."
                 if lesson_content_response and hasattr(lesson_content_response, 'error') and lesson_content_response.error:
                     agent_error_msg = str(lesson_content_response.error)
+                    
+                    # Check if this was a retryable error that exhausted retries
+                    if is_retryable_error(Exception(lesson_content_response.error)):
+                        agent_error_msg = f"Connection issues prevented content generation after multiple retries: {lesson_content_response.error}"
                 elif not lesson_content_response:
                     agent_error_msg = "Agent did not return a response object."
                 
-                print(f"Failed to generate content for lesson ID: {lesson_id}. Agent Error: {agent_error_msg}")
+                logger.error(f"Failed to generate content for lesson ID: {lesson_id}. Agent Error: {agent_error_msg}")
                 self.lesson_repo.update(lesson_id, {
                     "generation_status": LessonStatus.GENERATION_FAILED.value,
-                    "content_md": f"Content generation failed. Agent error: {agent_error_msg}"
+                    "content_md": f"Content generation failed. {agent_error_msg}"
                 })
                 return self.lesson_repo.get_by_id(lesson_id)
 
         except Exception as e:
-            print(f"An unexpected exception occurred during lesson regeneration for ID {lesson_id}: {e}")
+            error_msg = f"Critical exception during regeneration: {str(e)[:500]}"
+            logger.error(f"An unexpected exception occurred during lesson regeneration for ID {lesson_id}: {e}")
             import traceback
             traceback.print_exc()
             
             # Attempt to update lesson status to reflect failure due to exception
             if lesson_id:
                 try:
+                    # Check if this was a connection error
+                    if is_retryable_error(e):
+                        error_msg = f"Connection issues prevented regeneration: {str(e)[:500]}"
+                    
                     self.lesson_repo.update(lesson_id, {
                         "generation_status": LessonStatus.GENERATION_FAILED.value,
-                        "content_md": f"Critical exception during regeneration: {str(e)[:500]}"
+                        "content_md": error_msg
                     })
                 except Exception as db_update_err:
-                    print(f"Additionally, failed to update lesson status to FAILED after critical exception: {db_update_err}")
+                    logger.error(f"Additionally, failed to update lesson status to FAILED after critical exception: {db_update_err}")
             
             return None
 

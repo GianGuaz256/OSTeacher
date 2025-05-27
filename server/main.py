@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware # Added for CORS
-from .routers import courses, lessons # Added lessons router
+from .routers import courses, lessons, quizzes # Added quizzes router
 from .database import supabase # Optional: You might want to initialize DB connection here if needed on startup
 # Remove direct crud, models, dependencies imports if they were only for the moved endpoint and not used elsewhere in main.py
 # from . import crud, models, dependencies # Potentially remove or prune this
@@ -32,6 +32,8 @@ app.add_middleware(
 app.include_router(courses.router)
 # Include the lessons routes
 app.include_router(lessons.router)
+# Include the quiz routes
+app.include_router(quizzes.router)
 
 @app.get("/", tags=["Root"])
 def read_root():

@@ -21,7 +21,8 @@ def create_new_course(request_data: models.CourseCreateRequest, db: Client = Dep
         db=db, 
         initial_title=request_data.title,
         subject=request_data.subject,
-        difficulty=request_data.difficulty
+        difficulty=request_data.difficulty,
+        has_quizzes=request_data.has_quizzes
     )
     if created_course_full_data is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Failed to create course with agent team. Check server logs for details.")

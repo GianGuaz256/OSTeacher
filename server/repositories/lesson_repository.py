@@ -133,4 +133,25 @@ class LessonRepository:
             
         except Exception as e:
             print(f"Error fetching lesson with course info {lesson_id}: {e}")
+            return None
+    
+    def get_course_with_lessons(self, course_id: str) -> Optional[Dict[str, Any]]:
+        """Get a course with all its lessons for final quiz generation."""
+        try:
+            # Get course information
+            course_response = self.db.table("courses").select("*").eq("id", course_id).maybe_single().execute()
+            
+            if not course_response.data:
+                return None
+            
+            course_data = course_response.data
+            
+            # Get all lessons for this course
+            lessons = self.get_by_course_id(course_id)
+            course_data['lessons'] = lessons
+            
+            return course_data
+            
+        except Exception as e:
+            print(f"Error fetching course with lessons {course_id}: {e}")
             return None 

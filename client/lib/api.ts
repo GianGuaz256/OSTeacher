@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Course, CourseCreationResponse, CourseCreateRequest, CourseUpdate, Lesson, UserLessonStatus } from './types';
+import type { Course, CourseCreationResponse, CourseCreateRequest, CourseUpdate, Lesson, UserLessonStatus, Quiz, QuizCreateRequest, QuizUpdateRequest, QuizStatusUpdate } from './types';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
 
@@ -131,6 +131,137 @@ export async function retryCourseGeneration(courseId: string): Promise<Course | 
     return response.data;
   } catch (error) {
     console.error(`Failed to retry course generation for course ${courseId}:`, error);
+    return null;
+  }
+}
+
+// Quiz API Functions
+
+// Get quiz by ID
+export async function getQuizById(quizId: string): Promise<Quiz | null> {
+  try {
+    const response = await apiClient.get<Quiz>(`/quizzes/${quizId}`);
+    return response.data;
+  } catch (error) {
+    console.error(`Failed to fetch quiz ${quizId}:`, error);
+    return null;
+  }
+}
+
+// Get quiz by lesson ID
+export async function getQuizByLessonId(lessonId: string): Promise<Quiz | null> {
+  try {
+    const response = await apiClient.get<Quiz>(`/quizzes/lessons/${lessonId}/quiz`);
+    return response.data;
+  } catch (error) {
+    console.error(`Failed to fetch quiz for lesson ${lessonId}:`, error);
+    return null;
+  }
+}
+
+// Get all quizzes for a course
+export async function getQuizzesByCourseId(courseId: string): Promise<Quiz[]> {
+  try {
+    const response = await apiClient.get<Quiz[]>(`/quizzes/courses/${courseId}/quizzes`);
+    return response.data;
+  } catch (error) {
+    console.error(`Failed to fetch quizzes for course ${courseId}:`, error);
+    return [];
+  }
+}
+
+// Get final quiz for a course
+export async function getFinalQuizByCourseId(courseId: string): Promise<Quiz | null> {
+  try {
+    const response = await apiClient.get<Quiz>(`/quizzes/courses/${courseId}/final-quiz`);
+    return response.data;
+  } catch (error) {
+    console.error(`Failed to fetch final quiz for course ${courseId}:`, error);
+    return null;
+  }
+}
+
+// Create a quiz for a lesson
+export async function createQuizForLesson(courseId: string, lessonId: string, timeLimit: number = 300, passingScore: number = 70): Promise<Quiz | null> {
+  try {
+    const response = await apiClient.post<Quiz>(`/quizzes/lessons/${lessonId}/quiz`, {
+      course_id: courseId,
+      time_limit_seconds: timeLimit,
+      passing_score: passingScore
+    });
+    return response.data;
+  } catch (error) {
+    console.error(`Failed to create quiz for lesson ${lessonId}:`, error);
+    return null;
+  }
+}
+
+// Create a final quiz for a course
+export async function createFinalQuizForCourse(courseId: string, timeLimit: number = 600, passingScore: number = 80): Promise<Quiz | null> {
+  try {
+    const response = await apiClient.post<Quiz>(`/quizzes/courses/${courseId}/final-quiz`, {
+      time_limit_seconds: timeLimit,
+      passing_score: passingScore
+    });
+    return response.data;
+  } catch (error) {
+    console.error(`Failed to create final quiz for course ${courseId}:`, error);
+    return null;
+  }
+}
+
+// Update quiz
+export async function updateQuiz(quizId: string, data: QuizUpdateRequest): Promise<Quiz | null> {
+  try {
+    const response = await apiClient.put<Quiz>(`/quizzes/${quizId}`, data);
+    return response.data;
+  } catch (error) {
+    console.error(`Failed to update quiz ${quizId}:`, error);
+    return null;
+  }
+}
+
+// Update quiz passed status
+export async function updateQuizPassedStatus(quizId: string, passed: boolean): Promise<Quiz | null> {
+  try {
+    const response = await apiClient.put<Quiz>(`/quizzes/${quizId}/status`, { passed });
+    return response.data;
+  } catch (error) {
+    console.error(`Failed to update quiz ${quizId} passed status:`, error);
+    return null;
+  }
+}
+
+// Mark quiz as attempted (started)
+export async function markQuizAsAttempted(quizId: string): Promise<Quiz | null> {
+  try {
+    // Mark as attempted by setting passed to false initially
+    const response = await apiClient.put<Quiz>(`/quizzes/${quizId}/status`, { passed: false });
+    return response.data;
+  } catch (error) {
+    console.error(`Failed to mark quiz ${quizId} as attempted:`, error);
+    return null;
+  }
+}
+
+// Delete quiz
+export async function deleteQuiz(quizId: string): Promise<boolean> {
+  try {
+    await apiClient.delete(`/quizzes/${quizId}`);
+    return true;
+  } catch (error) {
+    console.error(`Failed to delete quiz ${quizId}:`, error);
+    return false;
+  }
+}
+
+// Regenerate quiz content
+export async function regenerateQuiz(quizId: string): Promise<Quiz | null> {
+  try {
+    const response = await apiClient.post<Quiz>(`/quizzes/${quizId}/regenerate`);
+    return response.data;
+  } catch (error) {
+    console.error(`Failed to regenerate quiz ${quizId}:`, error);
     return null;
   }
 } 

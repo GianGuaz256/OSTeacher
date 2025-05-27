@@ -60,11 +60,62 @@ class CourseField(str, Enum):
     PSYCHOLOGY = "psychology"
     ECONOMICS = "economics"
 
+# Quiz-related models
+class QuizQuestion(BaseModel):
+    question: str
+    questionType: str = "text"  # "text" or "photo"
+    questionPic: Optional[str] = None
+    answerSelectionType: str = "single"  # "single" or "multiple"
+    answers: List[str]
+    correctAnswer: str  # For single answer: "1", "2", etc. For multiple: ["1", "2"]
+    messageForCorrectAnswer: str = "Correct answer. Good job."
+    messageForIncorrectAnswer: str = "Incorrect answer. Please try again."
+    explanation: Optional[str] = None
+    point: str = "10"
+
+class QuizData(BaseModel):
+    quizTitle: str
+    quizSynopsis: str
+    progressBarColor: str = "#9de1f6"
+    nrOfQuestions: str
+    questions: List[QuizQuestion]
+
+class Quiz(BaseModel):
+    id: Optional[str] = None
+    course_id: str  # Added course_id field
+    lesson_id: Optional[str] = None  # Made optional for final course quizzes
+    quiz_data: QuizData
+    time_limit_seconds: int = 300  # 5 minutes default
+    passing_score: int = 70  # Percentage required to pass
+    is_active: bool = True
+    is_final_quiz: bool = False  # Flag to indicate if this is the final course quiz
+    passed: Optional[bool] = None  # Track if user passed the quiz
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+class QuizCreateRequest(BaseModel):
+    course_id: str  # Added course_id field
+    lesson_id: Optional[str] = None  # Made optional for final course quizzes
+    time_limit_seconds: int = 300
+    passing_score: int = 70
+    is_final_quiz: bool = False
+
+class QuizUpdateRequest(BaseModel):
+    quiz_data: Optional[QuizData] = None
+    time_limit_seconds: Optional[int] = None
+    passing_score: Optional[int] = None
+    is_active: Optional[bool] = None
+    passed: Optional[bool] = None  # Allow updating passed status
+
+class QuizStatusUpdateRequest(BaseModel):
+    passed: bool
+
 # New model for items in the lesson_outline_plan
 class LessonOutlineItem(BaseModel):
     order: int
     planned_title: str
     planned_description: Optional[str] = None
+    has_quiz: bool = False  # New field to indicate if lesson should have a quiz
     # You might add a unique ID here if planner generates one, or rely on order for initial creation
 
 class Lesson(BaseModel):
@@ -77,6 +128,8 @@ class Lesson(BaseModel):
     generation_status: LessonStatus = LessonStatus.PLANNED # New field for generation process
     status: UserLessonStatus = UserLessonStatus.NOT_STARTED # User-facing status
     order_in_course: Optional[int] = None # Will be set
+    has_quiz: bool = False  # New field to indicate if lesson has a quiz
+    quiz: Optional[Quiz] = None  # Optional quiz data when fetched with quiz
 
 class Course(BaseModel):
     id: Optional[str] = None 
@@ -86,6 +139,7 @@ class Course(BaseModel):
     icon: Optional[str] = None
     difficulty: Optional[CourseDifficulty] = None
     field: Optional[CourseField] = None  # New field for field of study
+    has_quizzes: bool = False  # New field to indicate if course has quizzes
     lesson_outline_plan: Optional[List[LessonOutlineItem]] = None # New field to store the plan
     lessons: List[Lesson] = Field(default_factory=list) # This will be populated from the separate 'lessons' table
     # The 'lessons' field above is for API response. It's not directly stored in 'courses' table as JSON blob anymore.
@@ -100,6 +154,7 @@ class CourseCreateRequest(BaseModel):
     title: str
     subject: str
     difficulty: CourseDifficulty
+    has_quizzes: bool = False  # Added has_quizzes flag
     # lessons list is removed from here, as they are not created directly with the course object in one go.
     # The creation process will generate an outline first.
 

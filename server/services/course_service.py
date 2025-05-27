@@ -6,18 +6,23 @@ import re
 import threading
 from agno.run.response import RunResponse
 from pydantic import ValidationError
+import logging
 
 from ..repositories.course_repository import CourseRepository
 from ..repositories.lesson_repository import LessonRepository
 from ..agents.course_planner_agent import CoursePlannerAgent
 from ..agents.lesson_content_agent import LessonContentAgent
+from ..services.quiz_service import QuizService
 from ..utils.parsers import CourseParser
 from ..utils.helpers import extract_external_links
+from ..utils.retry_utils import is_retryable_error
 from ..models import (
     CourseDifficulty, CourseStatus, UserCourseStatus, 
     LessonStatus, UserLessonStatus, LessonOutlineItem,
     CourseUpdateRequest, CourseField
 )
+
+logger = logging.getLogger(__name__)
 
 class CourseService:
     """Service for course business logic."""
@@ -25,6 +30,7 @@ class CourseService:
     def __init__(self, db: Client):
         self.course_repo = CourseRepository(db)
         self.lesson_repo = LessonRepository(db)
+        self.quiz_service = QuizService(db)
         self.course_parser = CourseParser()
         self.db = db
     
@@ -56,40 +62,29 @@ class CourseService:
     
     def update_course(self, course_id: str, course_update_request: CourseUpdateRequest) -> Optional[Dict[str, Any]]:
         """Updates an existing course by its ID."""
-        update_data_dict = course_update_request.model_dump(exclude_unset=True)
-        
-        # Handle status mapping for user-facing status
-        if 'status' in update_data_dict and hasattr(update_data_dict['status'], 'value'):
-            update_data_dict['user_facing_status'] = update_data_dict.pop('status').value
-        elif 'status' in update_data_dict:
-            # If status is present but not an enum, remove it to avoid confusion
-            update_data_dict.pop('status')
-
-        # Separate lesson_outline_plan for special handling if it exists
-        new_lesson_outline_plan = update_data_dict.pop('lesson_outline_plan', None)
-
-        if not update_data_dict and new_lesson_outline_plan is None:
-            return self.get_course(course_id)
-
         try:
-            # Update scalar fields of the course
-            if update_data_dict:
-                updated_course = self.course_repo.update(course_id, update_data_dict)
-                if not updated_course:
-                    if not self.course_repo.exists(course_id):
-                        return None
-                    print(f"Course {course_id} exists, but update failed.")
+            # Fetch the existing course
+            existing_course = self.course_repo.get_by_id(course_id)
+            if not existing_course:
+                logger.error(f"Course with ID {course_id} not found for update.")
+                return None
 
-            # Handle lesson_outline_plan update
-            if new_lesson_outline_plan is not None:
-                print(f"Updating lesson_outline_plan for course {course_id}.")
-                # Save the new plan to the course itself
-                plan_update_response = self.course_repo.update(course_id, {"lesson_outline_plan": new_lesson_outline_plan})
-                if not plan_update_response:
-                    print(f"Error updating lesson_outline_plan for course {course_id}")
+            # Prepare update data
+            update_data = {}
+            if course_update_request.title is not None:
+                update_data["title"] = course_update_request.title
+            if course_update_request.description is not None:
+                update_data["description"] = course_update_request.description
+            if course_update_request.icon is not None:
+                update_data["icon"] = course_update_request.icon
 
-                # Delete all existing lessons and recreate them based on the new plan
-                print(f"Deleting existing lessons for course {course_id} before repopulating based on new plan.")
+            # Handle lesson outline plan update
+            if course_update_request.lesson_outline_plan is not None:
+                new_lesson_outline_plan = [item.dict() for item in course_update_request.lesson_outline_plan]
+                update_data["lesson_outline_plan"] = new_lesson_outline_plan
+                
+                # Delete existing lessons and recreate them
+                logger.info(f"Updating lesson outline for course {course_id}. Deleting existing lessons.")
                 self.lesson_repo.delete_by_course_id(course_id)
                 
                 # Recreate lessons based on the new_lesson_outline_plan
@@ -105,121 +100,123 @@ class CourseService:
                     }
                     insert_lesson_resp = self.lesson_repo.create(lesson_placeholder_data)
                     if not insert_lesson_resp:
-                        print(f"Error inserting new lesson placeholder for '{lesson_outline.planned_title}' during course update")
+                        logger.error(f"Error inserting new lesson placeholder for '{lesson_outline.planned_title}' during course update")
 
-                print(f"Lessons repopulated based on new plan for course {course_id}. Content regeneration may be needed separately.")
+                logger.info(f"Lessons repopulated based on new plan for course {course_id}. Content regeneration may be needed separately.")
 
             # Fetch and return the updated course with its (potentially new) lessons
             return self.get_course(course_id)
                 
         except Exception as e:
-            print(f"An exception occurred during course update for {course_id}: {e}")
+            logger.error(f"An exception occurred during course update for {course_id}: {e}")
             import traceback
             traceback.print_exc()
             return None
 
-    def create_course_with_team(self, initial_title: str, subject: str, difficulty: CourseDifficulty) -> Optional[Dict[str, Any]]:
+    def create_course_with_team(self, initial_title: str, subject: str, difficulty: CourseDifficulty, has_quizzes: bool = False) -> Optional[Dict[str, Any]]:
         """
         Generates a course using an Agent Team (Planner and Lesson Content agents),
         saves the course outline, then incrementally creates and generates content for each lesson.
         """
-        course_id = str(uuid.uuid4())
-
         try:
-            # Step 1: Generate course plan
-            plan_data = self._generate_course_plan(initial_title, subject, difficulty)
+            # Validate has_quizzes requirement
+            if not has_quizzes:
+                logger.error("Course creation rejected: has_quizzes must be True. All courses must have quizzes enabled.")
+                raise ValueError("Course creation requires has_quizzes to be True. All courses must have quizzes enabled for educational quality.")
+
+            # Generate course plan using AI
+            plan_data = self._generate_course_plan(initial_title, subject, difficulty, has_quizzes)
             if not plan_data:
+                logger.error("Failed to generate course plan")
                 return None
 
-            # Step 2: Save initial course
-            course_data = self._prepare_course_data(course_id, plan_data, subject, difficulty)
-            created_course = self.course_repo.create(course_data)
-            if not created_course:
+            # Generate unique course ID
+            course_id = str(uuid.uuid4())
+            
+            # Prepare course data for database
+            course_data = self._prepare_course_data(course_id, plan_data, subject, difficulty, has_quizzes)
+            
+            # Save initial course to database
+            saved_course = self.course_repo.create(course_data)
+            if not saved_course:
+                logger.error("Failed to save initial course to database")
                 return None
-
-            print(f"Successfully saved initial course with ID: {course_id}")
-
-            # Step 3: Generate lessons (background task)
-            self._generate_lessons_async(course_id, plan_data, subject, difficulty)
-
+            
+            logger.info(f"Successfully saved initial course with ID: {course_id}")
+            
+            # Start background lesson generation
+            self._generate_lessons_async(course_id, plan_data, subject, difficulty, has_quizzes)
+            
+            # Return the course immediately (lessons will be generated in background)
             return self.get_course(course_id)
-
+            
         except Exception as e:
-            print(f"Exception creating course: {e}")
+            logger.error(f"An exception occurred during course creation: {e}")
             import traceback
             traceback.print_exc()
             return None
 
-    def _generate_course_plan(self, title: str, subject: str, difficulty: CourseDifficulty) -> Optional[Dict]:
+    def _generate_course_plan(self, title: str, subject: str, difficulty: CourseDifficulty, has_quizzes: bool) -> Optional[Dict]:
         """Generate course plan using AI agent."""
-        planner = CoursePlannerAgent()
-        query = f"Plan a course on '{subject}' titled '{title}' for difficulty '{difficulty.value}'. Generate 5-10 lessons."
-        
         try:
-            print(f"Running CoursePlannerAgent for: '{title}' on '{subject}'...")
-            planner_response_obj = planner.run(query)
-
-            if not isinstance(planner_response_obj, RunResponse) or not planner_response_obj.content:
-                error_msg = getattr(planner_response_obj, 'error', "Planner agent did not return a valid RunResponse object or content.")
-                print(f"Error: {error_msg}")
-                return None
-
-            planner_content_str = planner_response_obj.content
-            print(f"Planner agent returned {len(planner_content_str)} characters of content")
-
-            # Parse the course plan using the parser
-            course_plan_json = self.course_parser.parse_course_plan(planner_content_str)
+            planner_agent = CoursePlannerAgent()
             
-            if not course_plan_json:
-                # Try one more time with a simpler request
-                print("Attempting a retry with a simpler course plan request...")
-                simpler_query = f"Create a simple course plan for '{subject}' with title '{title}' at {difficulty.value} difficulty. Make exactly 5 lessons. Return ONLY valid JSON with courseTitle, courseDescription, courseIcon, and lesson_outline_plan array."
-                retry_response = planner.run(simpler_query)
-                
-                if retry_response and retry_response.content:
-                    print(f"Retry response length: {len(retry_response.content)} characters")
-                    course_plan_json = self.course_parser.parse_course_plan(retry_response.content)
-                    if course_plan_json:
-                        print("Successfully parsed retry response!")
-                    else:
-                        print("Could not parse retry response")
-                        return None
+            planner_query = (
+                f"Subject: {subject}\\n"
+                f"Initial Title: {title}\\n"
+                f"Difficulty Level: {difficulty.value}\\n"
+                f"Has Quizzes: {has_quizzes}"
+            )
+            
+            logger.info(f"Running CoursePlannerAgent for: '{title}' on '{subject}'...")
+            planner_response = planner_agent.run(planner_query)
+            
+            # Handle error response from agent
+            if hasattr(planner_response, 'error') and planner_response.error:
+                error_msg = str(planner_response.error)
+                if is_retryable_error(Exception(planner_response.error)):
+                    logger.error(f"Course planning failed due to connection issues: {error_msg}")
                 else:
-                    print("Retry attempt also failed")
-                    return None
-
-            # Validate the course plan structure
-            if not course_plan_json or "lesson_outline_plan" not in course_plan_json or not isinstance(course_plan_json["lesson_outline_plan"], list):
-                print(f"Error: Invalid course plan structure from CoursePlannerAgent. Plan data: {course_plan_json}")
-                return None
-
-            num_planned_lessons = len(course_plan_json["lesson_outline_plan"])
-            if not (5 <= num_planned_lessons <= 10):
-                print(f"Warning: CoursePlannerAgent planned {num_planned_lessons} lessons, outside instructed range. Proceeding.")
-            if num_planned_lessons == 0:
-                print("Error: CoursePlannerAgent planned 0 lessons. Aborting.")
+                    logger.error(f"Course planning failed: {error_msg}")
                 return None
             
-            # Validate lesson_outline_plan structure
-            for i, item_dict in enumerate(course_plan_json["lesson_outline_plan"]):
-                try:
-                    LessonOutlineItem(**item_dict)
-                except ValidationError as e_val:
-                    print(f"Error: Invalid item in lesson_outline_plan at index {i}. Validation error details below.")
-                    print(f"Problematic item_dict: {item_dict}")
-                    print(f"Pydantic validation errors: {e_val.errors()}")
-                    return None
+            if not planner_response or not hasattr(planner_response, 'content') or not planner_response.content:
+                logger.error("CoursePlannerAgent returned no content")
+                return None
             
-            print(f"CoursePlannerAgent successfully generated a plan for {num_planned_lessons} lessons.")
-            return course_plan_json
-
+            logger.info(f"Planner agent returned {len(planner_response.content)} characters of content")
+            
+            # Parse JSON response
+            try:
+                plan_data = json.loads(planner_response.content)
+                
+                # Validate required fields
+                required_fields = ["courseTitle", "courseDescription", "lesson_outline_plan"]
+                for field in required_fields:
+                    if field not in plan_data:
+                        logger.error(f"Missing required field '{field}' in course plan")
+                        return None
+                
+                # Validate lesson outline
+                if not isinstance(plan_data["lesson_outline_plan"], list) or len(plan_data["lesson_outline_plan"]) == 0:
+                    logger.error("Invalid or empty lesson_outline_plan")
+                    return None
+                
+                logger.info(f"CoursePlannerAgent successfully generated a plan for {len(plan_data['lesson_outline_plan'])} lessons.")
+                return plan_data
+                
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse JSON from CoursePlannerAgent: {e}")
+                logger.error(f"Raw content: {planner_response.content[:500]}...")
+                return None
+                
         except Exception as e:
-            print(f"An exception occurred during CoursePlannerAgent execution: {e}")
+            logger.error(f"An exception occurred during CoursePlannerAgent execution: {e}")
             import traceback
             traceback.print_exc()
             return None
 
-    def _prepare_course_data(self, course_id: str, plan_data: Dict, subject: str, difficulty: CourseDifficulty) -> Dict[str, Any]:
+    def _prepare_course_data(self, course_id: str, plan_data: Dict, subject: str, difficulty: CourseDifficulty, has_quizzes: bool) -> Dict[str, Any]:
         """Prepare course data for database insertion."""
         # Parse the field from the AI response
         course_field = None
@@ -227,7 +224,7 @@ class CourseService:
             try:
                 course_field = CourseField(plan_data["courseField"].lower())
             except ValueError:
-                print(f"Warning: Invalid field '{plan_data['courseField']}' from AI. Using None.")
+                logger.warning(f"Invalid field '{plan_data['courseField']}' from AI. Using None.")
                 course_field = None
         
         return {
@@ -241,9 +238,10 @@ class CourseService:
             "lesson_outline_plan": plan_data["lesson_outline_plan"],
             "generation_status": CourseStatus.DRAFT.value,
             "user_facing_status": UserCourseStatus.NOT_STARTED.value,
+            "has_quizzes": has_quizzes
         }
 
-    def _generate_lessons_async(self, course_id: str, plan_data: Dict, subject: str, difficulty: CourseDifficulty):
+    def _generate_lessons_async(self, course_id: str, plan_data: Dict, subject: str, difficulty: CourseDifficulty, has_quizzes: bool):
         """Generate lessons in background thread."""
         def generate_lessons():
             try:
@@ -261,23 +259,24 @@ class CourseService:
                         "planned_description": lesson_outline.planned_description,
                         "order_in_course": lesson_outline.order,
                         "generation_status": LessonStatus.PLANNED.value,
-                        "user_facing_status": UserLessonStatus.NOT_STARTED.value
+                        "user_facing_status": UserLessonStatus.NOT_STARTED.value,
+                        "has_quiz": lesson_outline.has_quiz  # Include quiz flag from planner
                     }
                     
                     try:
-                        print(f"Creating placeholder for lesson: '{lesson_outline.planned_title}'")
+                        logger.info(f"Creating placeholder for lesson: '{lesson_outline.planned_title}'")
                         placeholder_response = self.lesson_repo.create(lesson_placeholder_data)
                         if not placeholder_response or not placeholder_response.get('id'):
-                            print(f"Error creating placeholder for lesson '{lesson_outline.planned_title}'.")
+                            logger.error(f"Error creating placeholder for lesson '{lesson_outline.planned_title}'.")
                             continue
 
                         lesson_id = placeholder_response['id']
-                        print(f"Placeholder lesson created with ID: {lesson_id}")
+                        logger.info(f"Placeholder lesson created with ID: {lesson_id}")
 
                         # Update status to 'generating' before calling agent
                         self.lesson_repo.update(lesson_id, {"generation_status": LessonStatus.GENERATING.value})
 
-                        print(f"Generating content for lesson: '{lesson_outline.planned_title}' (ID: {lesson_id})")
+                        logger.info(f"Generating content for lesson: '{lesson_outline.planned_title}' (ID: {lesson_id})")
                         lesson_content_query = (
                             f"Lesson Title: {lesson_outline.planned_title}\\n"
                             f"Lesson Description: {lesson_outline.planned_description}\\n"
@@ -287,7 +286,8 @@ class CourseService:
                         
                         lesson_content_response = lesson_agent.run(lesson_content_query)
                         
-                        if lesson_content_response and lesson_content_response.content:
+                        # Handle successful response
+                        if lesson_content_response and hasattr(lesson_content_response, 'content') and lesson_content_response.content:
                             # Extract links
                             extracted_links = extract_external_links(lesson_content_response.content)
                             
@@ -297,25 +297,64 @@ class CourseService:
                                 "generation_status": LessonStatus.COMPLETED.value
                             }
                             self.lesson_repo.update(lesson_id, lesson_update_data)
-                            print(f"Content generated and saved for lesson ID: {lesson_id}")
+                            logger.info(f"Content generated and saved for lesson ID: {lesson_id}")
+                            
+                            # Generate quiz if lesson should have one
+                            if lesson_outline.has_quiz:
+                                logger.info(f"Generating quiz for lesson: '{lesson_outline.planned_title}' (ID: {lesson_id})")
+                                try:
+                                    quiz_result = self.quiz_service.create_quiz_for_lesson(course_id, lesson_id)
+                                    if quiz_result:
+                                        logger.info(f"Quiz successfully generated for lesson ID: {lesson_id}")
+                                    else:
+                                        logger.error(f"Failed to generate quiz for lesson ID: {lesson_id}")
+                                except Exception as quiz_error:
+                                    logger.error(f"Error generating quiz for lesson ID {lesson_id}: {quiz_error}")
                         else:
-                            print(f"Failed to generate content for lesson ID: {lesson_id}. Error: {getattr(lesson_content_response, 'error', 'No content')}")
+                            # Handle error response from agent
+                            error_msg = "No content generated"
+                            if hasattr(lesson_content_response, 'error') and lesson_content_response.error:
+                                error_msg = str(lesson_content_response.error)
+                                if is_retryable_error(Exception(lesson_content_response.error)):
+                                    error_msg = f"Connection issues prevented content generation: {lesson_content_response.error}"
+                            
+                            logger.error(f"Failed to generate content for lesson ID: {lesson_id}. Error: {error_msg}")
                             self.lesson_repo.update(lesson_id, {"generation_status": LessonStatus.GENERATION_FAILED.value})
                     
                     except Exception as e_lesson:
-                        print(f"Exception during lesson processing for '{lesson_outline.planned_title}': {e_lesson}")
+                        error_msg = f"Exception during lesson processing for '{lesson_outline.planned_title}': {e_lesson}"
+                        if is_retryable_error(e_lesson):
+                            error_msg = f"Connection issues during lesson processing for '{lesson_outline.planned_title}': {e_lesson}"
+                        
+                        logger.error(error_msg)
                         import traceback
                         traceback.print_exc()
                         if 'lesson_id' in locals():
                             self.lesson_repo.update(lesson_id, {"generation_status": LessonStatus.GENERATION_FAILED.value})
                         continue
 
+                # Create final quiz if quizzes are enabled
+                if has_quizzes:
+                    logger.info(f"Creating final quiz for course ID: {course_id}")
+                    try:
+                        final_quiz_result = self.quiz_service.create_final_quiz_for_course(course_id)
+                        if final_quiz_result:
+                            logger.info(f"Final quiz successfully generated for course ID: {course_id}")
+                        else:
+                            logger.error(f"Failed to generate final quiz for course ID: {course_id}")
+                    except Exception as final_quiz_error:
+                        logger.error(f"Error generating final quiz for course ID {course_id}: {final_quiz_error}")
+
                 # Update course generation status to COMPLETED
-                print(f"Lesson generation loop finished for course ID: {course_id}. Setting course generation_status to COMPLETED.")
+                logger.info(f"Lesson generation loop finished for course ID: {course_id}. Setting course generation_status to COMPLETED.")
                 self.course_repo.update(course_id, {"generation_status": CourseStatus.COMPLETED.value})
                 
             except Exception as e:
-                print(f"Exception in background lesson generation for course ID {course_id}: {e}")
+                error_msg = f"Exception in background lesson generation for course ID {course_id}: {e}"
+                if is_retryable_error(e):
+                    error_msg = f"Connection issues in background lesson generation for course ID {course_id}: {e}"
+                
+                logger.error(error_msg)
                 import traceback
                 traceback.print_exc()
                 
@@ -323,7 +362,7 @@ class CourseService:
                 try:
                     self.course_repo.update(course_id, {"generation_status": CourseStatus.GENERATION_FAILED.value})
                 except Exception as db_update_err:
-                    print(f"Failed to update course status to GENERATION_FAILED after background exception: {db_update_err}")
+                    logger.error(f"Failed to update course status to GENERATION_FAILED after background exception: {db_update_err}")
         
         # Start the background thread
         background_thread = threading.Thread(target=generate_lessons)
@@ -339,14 +378,14 @@ class CourseService:
             # Fetch the course to ensure it exists and get the lesson plan
             course_data = self.course_repo.get_by_id(course_id)
             if not course_data:
-                print(f"Course with ID {course_id} not found for retry.")
+                logger.error(f"Course with ID {course_id} not found for retry.")
                 return None
             
             course_subject = course_data.get('subject', 'General')
             lesson_outline_plan = course_data.get('lesson_outline_plan', [])
             
             if not lesson_outline_plan or not isinstance(lesson_outline_plan, list):
-                print(f"Course {course_id} has no valid lesson_outline_plan. Cannot retry generation.")
+                logger.error(f"Course {course_id} has no valid lesson_outline_plan. Cannot retry generation.")
                 return None
             
             # Parse difficulty
@@ -356,26 +395,26 @@ class CourseService:
             except ValueError:
                 course_difficulty_enum = CourseDifficulty.MEDIUM
             
-            print(f"Starting complete retry generation for course: {course_data.get('title')} (ID: {course_id})")
-            print(f"Will recreate {len(lesson_outline_plan)} lessons from the course plan")
+            logger.info(f"Starting complete retry generation for course: {course_data.get('title')} (ID: {course_id})")
+            logger.info(f"Will recreate {len(lesson_outline_plan)} lessons from the course plan")
             
             # Delete all existing lessons for this course
-            print(f"Deleting all existing lessons for course {course_id}")
+            logger.info(f"Deleting all existing lessons for course {course_id}")
             self.lesson_repo.delete_by_course_id(course_id)
             
             # Update course status to 'generating'
             self.course_repo.update(course_id, {"generation_status": CourseStatus.GENERATING.value})
             
             # Start background generation process
-            self._generate_lessons_async(course_id, {"lesson_outline_plan": lesson_outline_plan}, course_subject, course_difficulty_enum)
+            self._generate_lessons_async(course_id, {"lesson_outline_plan": lesson_outline_plan}, course_subject, course_difficulty_enum, course_data.get('has_quizzes', False))
             
-            print(f"Background lesson generation started for course ID: {course_id}")
+            logger.info(f"Background lesson generation started for course ID: {course_id}")
             
             # Return the current course state immediately (with no lessons since we deleted them)
             return self.get_course(course_id)
             
         except Exception as e:
-            print(f"An unexpected exception occurred during course retry generation setup for ID {course_id}: {e}")
+            logger.error(f"An unexpected exception occurred during course retry generation setup for ID {course_id}: {e}")
             import traceback
             traceback.print_exc()
             
@@ -383,6 +422,6 @@ class CourseService:
             try:
                 self.course_repo.update(course_id, {"generation_status": CourseStatus.GENERATION_FAILED.value})
             except Exception as db_update_err:
-                print(f"Additionally, failed to update course status to GENERATION_FAILED after exception: {db_update_err}")
+                logger.error(f"Additionally, failed to update course status to GENERATION_FAILED after exception: {db_update_err}")
             
             return None

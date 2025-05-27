@@ -27,13 +27,13 @@ def update_course(db: Client, course_id: str, course_update_request: CourseUpdat
     course_service = CourseService(db)
     return course_service.update_course(course_id, course_update_request)
 
-def create_course_with_team(db: Client, initial_title: str, subject: str, difficulty: CourseDifficulty) -> Optional[Dict[str, Any]]:
+def create_course_with_team(db: Client, initial_title: str, subject: str, difficulty: CourseDifficulty, has_quizzes: bool = False) -> Optional[Dict[str, Any]]:
     """
     Generates a course using an Agent Team (Planner and Lesson Content agents),
     saves the course outline, then incrementally creates and generates content for each lesson.
     """
     course_service = CourseService(db)
-    return course_service.create_course_with_team(initial_title, subject, difficulty)
+    return course_service.create_course_with_team(initial_title, subject, difficulty, has_quizzes)
 
 def retry_course_generation(db: Client, course_id: str) -> Optional[Dict[str, Any]]:
     """

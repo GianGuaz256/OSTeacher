@@ -4,6 +4,10 @@ from agno.tools.youtube import YouTubeTools
 from agno.models.ollama import Ollama
 from agno.models.openai import OpenAIChat
 from .model_factory import get_agent_model
+from ..utils.retry_utils import retry_api_call, is_retryable_error
+import logging
+
+logger = logging.getLogger(__name__)
 
 class LessonContentAgent:
     """Agent responsible for generating detailed lesson content."""
@@ -47,6 +51,30 @@ class LessonContentAgent:
             add_datetime_to_instructions=True
         )
     
+    def _run_agent_with_retry(self, query: str):
+        """Run the agent with retry logic for connection errors."""
+        def agent_call():
+            return self.agent.run(query)
+        
+        try:
+            return retry_api_call(
+                agent_call,
+                max_retries=3,  # Override default for lesson generation
+                base_delay=3.0,  # Slightly longer delay for lesson generation
+                backoff_factor=2.0,
+                max_delay=30.0
+            )
+        except Exception as e:
+            logger.error(f"Lesson content generation failed after all retries: {e}")
+            # Return a structured error response that the service can handle
+            class ErrorResponse:
+                def __init__(self, error_msg):
+                    self.content = None
+                    self.error = error_msg
+            
+            return ErrorResponse(str(e))
+    
     def run(self, query: str):
         """Run the lesson content agent with the given query."""
-        return self.agent.run(query) 
+        logger.info(f"Starting lesson content generation with retry logic")
+        return self._run_agent_with_retry(query) 
